@@ -84,13 +84,50 @@
 				border-radius: 18px;
 				border: 1px solid rgba(62, 34, 16, 0.75);
 				background:
-					radial-gradient(ellipse 120px 22px at 18% 26%, transparent 0 38px, rgba(60, 27, 10, 0.45) 39px 42px, transparent 43px 58px),
-					radial-gradient(ellipse 150px 28px at 78% 64%, transparent 0 48px, rgba(255, 207, 124, 0.18) 49px 52px, rgba(55, 25, 10, 0.35) 53px 56px, transparent 57px 74px),
-					repeating-radial-gradient(ellipse 180px 34px at 28% 40%, rgba(72, 35, 13, 0.24) 0 2px, transparent 3px 9px),
-					repeating-radial-gradient(ellipse 220px 42px at 82% 18%, rgba(255, 221, 150, 0.13) 0 1px, transparent 2px 11px),
-					repeating-linear-gradient(87deg, rgba(52, 24, 9, 0.24) 0 2px, transparent 2px 10px, rgba(255, 221, 150, 0.12) 10px 12px, transparent 12px 22px),
-					repeating-linear-gradient(93deg, transparent 0 5px, rgba(31, 14, 6, 0.16) 5px 6px, transparent 6px 17px),
-					linear-gradient(90deg, rgba(255, 235, 181, 0.14), transparent 16%, rgba(0, 0, 0, 0.16) 42%, transparent 70%, rgba(255, 225, 154, 0.1)),
+					radial-gradient(
+						ellipse 120px 22px at 18% 26%,
+						transparent 0 38px,
+						rgba(60, 27, 10, 0.45) 39px 42px,
+						transparent 43px 58px
+					),
+					radial-gradient(
+						ellipse 150px 28px at 78% 64%,
+						transparent 0 48px,
+						rgba(255, 207, 124, 0.18) 49px 52px,
+						rgba(55, 25, 10, 0.35) 53px 56px,
+						transparent 57px 74px
+					),
+					repeating-radial-gradient(
+						ellipse 180px 34px at 28% 40%,
+						rgba(72, 35, 13, 0.24) 0 2px,
+						transparent 3px 9px
+					),
+					repeating-radial-gradient(
+						ellipse 220px 42px at 82% 18%,
+						rgba(255, 221, 150, 0.13) 0 1px,
+						transparent 2px 11px
+					),
+					repeating-linear-gradient(
+						87deg,
+						rgba(52, 24, 9, 0.24) 0 2px,
+						transparent 2px 10px,
+						rgba(255, 221, 150, 0.12) 10px 12px,
+						transparent 12px 22px
+					),
+					repeating-linear-gradient(
+						93deg,
+						transparent 0 5px,
+						rgba(31, 14, 6, 0.16) 5px 6px,
+						transparent 6px 17px
+					),
+					linear-gradient(
+						90deg,
+						rgba(255, 235, 181, 0.14),
+						transparent 16%,
+						rgba(0, 0, 0, 0.16) 42%,
+						transparent 70%,
+						rgba(255, 225, 154, 0.1)
+					),
 					linear-gradient(180deg, #9a5f2d 0%, #76421e 48%, #4f2a14 100%);
 				background-size:
 					620px 190px,
@@ -110,6 +147,17 @@
 			header {
 				text-align: center;
 				margin-bottom: 18px;
+			}
+			.felt-footer {
+				position: relative;
+				z-index: 1;
+				margin: 18px auto 0;
+				text-align: center;
+				color: rgba(247, 239, 218, 0.86);
+				font-size: 14px;
+				font-weight: 700;
+				letter-spacing: 0.02em;
+				text-shadow: 0 2px 4px rgba(0, 0, 0, 0.34);
 			}
 			.rack {
 				display: inline-flex;
@@ -131,11 +179,18 @@
 				gap: 5px;
 			}
 			.tagline {
-				color: #f3e7c6;
+				color: #fff4d6;
 				margin: 12px 2px 0;
 				font-size: 15px;
 				letter-spacing: 0.02em;
-				opacity: 0.9;
+				font-weight: 650;
+				text-shadow: 0 2px 4px rgba(0, 0, 0, 0.55);
+			}
+			.quote-author {
+				display: block;
+				margin-top: 3px;
+				font-size: 13px;
+				font-weight: 700;
 			}
 
 			.tile {
@@ -850,6 +905,7 @@
 					box-shadow: none;
 				}
 				header,
+				.felt-footer,
 				.entry-card,
 				.invcard,
 				.toolbar,
@@ -989,7 +1045,7 @@
 					<span class="word" id="wm1"></span>
 					<span class="word" id="wm2"></span>
 				</div>
-				<p class="tagline">Pack the letters, then change the signs.</p>
+				<p class="tagline" id="tagline">Pack the letters, then change the signs.</p>
 			</header>
 
 			<!-- Sign inputs (always visible) -->
@@ -1053,6 +1109,7 @@
 				</details>
 			</section>
 		</div>
+		<footer class="felt-footer">Love, Ted</footer>
 
 		<script>
 			'use strict';
@@ -1252,9 +1309,7 @@
 							continue;
 						}
 						if (CHARSET.has(ch))
-							lastTile = row.appendChild(
-								tileEl(ch, shortSet && shortSet.has(ch) ? 'short' : '')
-							);
+							lastTile = row.appendChild(tileEl(ch, shortSet && shortSet.has(ch) ? 'short' : ''));
 					}
 					el.appendChild(row);
 				}
@@ -1395,7 +1450,10 @@
 				try {
 					audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
 					if (audioCtx.state === 'suspended') {
-						audioCtx.resume().then(playTileClack).catch(() => {});
+						audioCtx
+							.resume()
+							.then(playTileClack)
+							.catch(() => {});
 						return;
 					}
 					playTileClack();
@@ -1409,7 +1467,8 @@
 					master.connect(audioCtx.destination);
 					const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.035, audioCtx.sampleRate);
 					const data = buffer.getChannelData(0);
-					for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+					for (let i = 0; i < data.length; i++)
+						data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
 					const noise = audioCtx.createBufferSource();
 					const noiseGain = audioCtx.createGain();
 					const noiseFilter = audioCtx.createBiquadFilter();
@@ -1966,6 +2025,36 @@
 					block.style.removeProperty('--print-scale');
 				});
 			}
+			async function loadTaglineQuote() {
+				const el = document.getElementById('tagline');
+				if (!el) return;
+				const fallback = 'Oops, no quote today!';
+				const renderQuote = (quote, author) => {
+					el.textContent = quote ? `"${quote}"` : fallback;
+					if (quote && author) {
+						const by = document.createElement('span');
+						by.className = 'quote-author';
+						by.textContent = author;
+						el.appendChild(by);
+					}
+				};
+				try {
+					const controller = new AbortController();
+					const timer = setTimeout(() => controller.abort(), 3500);
+					const res = await fetch('https://motivational-spark-api.vercel.app/api/quotes/random', {
+						signal: controller.signal,
+					});
+					clearTimeout(timer);
+					if (!res.ok) throw new Error('Quote request failed');
+					const data = await res.json();
+					const q = data && data.quote;
+					const a = data && data.author;
+					if (!q) throw new Error('Quote missing');
+					renderQuote(q, a);
+				} catch (e) {
+					renderQuote('', '');
+				}
+			}
 
 			/* init */
 			function init() {
@@ -1976,6 +2065,7 @@
 					if (!state.text) state.text = {};
 				}
 				buildWordmark();
+				loadTaglineQuote();
 				buildEntry();
 				buildInv();
 				calculate();

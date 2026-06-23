@@ -78,7 +78,7 @@
 			.wrap {
 				position: relative;
 				z-index: 1;
-				max-width: 980px;
+				max-width: 1120px;
 				margin: 0 auto;
 				padding: 18px;
 				border-radius: 18px;
@@ -1116,11 +1116,11 @@
 
 			const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 			const DIGITS = '1234567890'.split('');
-			const SYMBOLS = [',', '.', '-', '/', ':', '!', '?', '&', '%', ';', '"', '$'];
+			const SYMBOLS = [',', '.', '-', '/', ':', '!', '?', '&', '%', ';', '"', '$', '@'];
 			const CHARS = [...LETTERS, ...DIGITS, ...SYMBOLS];
 			const CHARSET = new Set(CHARS);
-			const TILE_EQUIV = { 9: '6', '-': 'I' };
-			const TILE_POOL_LABEL = { 6: '6/9', I: 'I/-' };
+			const TILE_EQUIV = { 9: '6', '-': 'I', '/': 'I' };
+			const TILE_POOL_LABEL = { 6: '6/9', I: 'I/-//' };
 			const VALUES = {
 				A: 1,
 				B: 3,
@@ -1151,7 +1151,6 @@
 			};
 
 			const SIGNS = [
-				{ key: 'PVCC', label: 'PVCC' },
 				{ key: 'M22N', label: 'M22 North' },
 				{ key: 'M22S', label: 'M22 South' },
 			];
@@ -1205,6 +1204,7 @@
 				';': 0,
 				'"': 0,
 				$: 0,
+				'@': 1,
 			};
 
 			const STORE_KEY = 'signswap.v2';

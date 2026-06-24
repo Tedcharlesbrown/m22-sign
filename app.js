@@ -200,9 +200,11 @@ const buildableWordCache = new Map();
 let dictionaryWords = null;
 let dictionaryPromise = null;
 const relatedCache = new Map(); // query -> related words (uppercase), from the thesaurus
+const spellingCache = new Map(); // query -> spelling suggestions (uppercase), from Datamuse
 const dictionaryApiCache = new Map(); // word -> true/false, exact dictionaryapi.dev result
 let currentBoxLeft = null;
 let relatedTimer = 0;
+let spellingTimer = 0;
 let dictionaryApiTimer = 0;
 let dictionarySearchTimer = 0;
 let dictionarySearchToken = 0;
@@ -653,15 +655,20 @@ function exactDictionaryQuery(query) {
 	const word = String(query || '').trim().toUpperCase();
 	return /^[A-Z]{2,17}$/.test(word) ? word : '';
 }
-function setDictionarySearchStatus(possibleCount, relatedCount) {
+function setDictionarySearchStatus(possibleCount, relatedCount, spellingCount) {
 	const status = document.getElementById('dictionaryStatus');
 	if (!status) return;
 	if (possibleCount) {
 		status.textContent =
 			`${possibleCount} possible word${possibleCount === 1 ? '' : 's'} shown.` +
-			(relatedCount ? ` Plus ${relatedCount} related.` : '');
+			(relatedCount ? ` Plus ${relatedCount} related.` : '') +
+			(spellingCount ? ` ${spellingCount} spelling suggestion${spellingCount === 1 ? '' : 's'}.` : '');
 	} else if (relatedCount) {
-		status.textContent = `${relatedCount} related word${relatedCount === 1 ? '' : 's'} shown.`;
+		status.textContent =
+			`${relatedCount} related word${relatedCount === 1 ? '' : 's'} shown.` +
+			(spellingCount ? ` ${spellingCount} spelling suggestion${spellingCount === 1 ? '' : 's'}.` : '');
+	} else if (spellingCount) {
+		status.textContent = `${spellingCount} spelling suggestion${spellingCount === 1 ? '' : 's'} shown.`;
 	} else {
 		status.textContent = 'No possible or related words found for this search.';
 	}
@@ -670,6 +677,7 @@ function renderDictionaryWords() {
 	clearTimeout(dictionarySearchTimer);
 	clearTimeout(dictionaryApiTimer);
 	clearTimeout(relatedTimer);
+	clearTimeout(spellingTimer);
 	dictionaryView = 'possible';
 	dictionarySearchToken++;
 	const results = document.getElementById('dictionaryResults');
@@ -698,6 +706,7 @@ function renderDictionaryWords() {
 	const shown = new Set([...yours, ...more]);
 	shown.possibleCount = total;
 	shown.relatedCount = 0;
+	shown.spellingCount = 0;
 	scheduleDictionaryFallbacks(query, shown);
 }
 function visibleYourWords() {
@@ -788,15 +797,18 @@ function cancelDictionarySearchWork() {
 	clearTimeout(dictionarySearchTimer);
 	clearTimeout(dictionaryApiTimer);
 	clearTimeout(relatedTimer);
+	clearTimeout(spellingTimer);
 	dictionarySearchToken++;
 }
 function scheduleDictionaryFallbacks(query, shown, delay) {
 	clearTimeout(dictionarySearchTimer);
 	clearTimeout(dictionaryApiTimer);
 	clearTimeout(relatedTimer);
+	clearTimeout(spellingTimer);
 	const token = ++dictionarySearchToken;
 	dictionarySearchTimer = setTimeout(() => {
 		if (token !== dictionarySearchToken) return;
+		scheduleSpellingSuggestions(query, shown);
 		scheduleExactDictionaryWord(query, shown);
 		scheduleRelatedWords(query, shown);
 	}, delay == null ? 300 : delay);
@@ -831,6 +843,62 @@ async function fetchExactDictionaryWord(query) {
 		return false;
 	}
 }
+async function fetchSpellingSuggestions(query) {
+	const q = exactDictionaryQuery(query);
+	if (!q) return [];
+	if (spellingCache.has(q)) return spellingCache.get(q);
+	try {
+		const res = await fetch(`${DATAMUSE_URL}?sp=${encodeURIComponent(q.toLowerCase())}&max=6`);
+		if (!res.ok) throw new Error('Spelling request failed');
+		const data = await res.json();
+		const seen = new Set();
+		const words = (Array.isArray(data) ? data : [])
+			.map((entry) => String(entry && entry.word ? entry.word : '').toUpperCase())
+			.filter(
+				(word) =>
+					/^[A-Z]{2,17}$/.test(word) &&
+					word !== q &&
+					!seen.has(word) &&
+					seen.add(word)
+			)
+			.slice(0, 3);
+		spellingCache.set(q, words);
+		return words;
+	} catch (e) {
+		return [];
+	}
+}
+function scheduleSpellingSuggestions(query, shown) {
+	clearTimeout(spellingTimer);
+	if (String(query || '').trim().length < 4) return;
+	spellingTimer = setTimeout(() => renderSpellingSuggestions(query, shown), 260);
+}
+async function renderSpellingSuggestions(query, shown) {
+	const results = document.getElementById('dictionaryResults');
+	const search = document.getElementById('dictionarySearch');
+	if (!results || !search) return;
+	const q = exactDictionaryQuery(query);
+	if (!q) return;
+	const words = await fetchSpellingSuggestions(q);
+	if (dictionaryView !== 'possible' || search.value !== query) return;
+	const available = poolCounts(dictionaryAvailableTiles());
+	const hidden = state.hiddenWords || {};
+	const suggestions = words.filter((word) => !shown.has(word) && !hidden[word]);
+	if (!suggestions.length) return;
+	const frag = document.createDocumentFragment();
+	frag.appendChild(dictGroupLabel('Did you mean?'));
+	for (const word of suggestions) {
+		frag.appendChild(dictWordRow(word, wordTileShortage(word, available), false));
+		shown.add(word);
+	}
+	results.insertBefore(frag, results.firstChild);
+	shown.spellingCount = suggestions.length;
+	setDictionarySearchStatus(
+		shown.possibleCount || 0,
+		shown.relatedCount || 0,
+		shown.spellingCount || 0
+	);
+}
 function scheduleExactDictionaryWord(query, shown) {
 	clearTimeout(dictionaryApiTimer);
 	const word = exactDictionaryQuery(query);
@@ -853,7 +921,11 @@ async function renderExactDictionaryWord(query, shown) {
 	results.insertBefore(frag, results.firstChild);
 	shown.add(word);
 	shown.possibleCount = (shown.possibleCount || 0) + 1;
-	setDictionarySearchStatus(shown.possibleCount || 0, shown.relatedCount || 0);
+	setDictionarySearchStatus(
+		shown.possibleCount || 0,
+		shown.relatedCount || 0,
+		shown.spellingCount || 0
+	);
 }
 async function fetchRelatedWords(query) {
 	const q = String(query || '').trim().toLowerCase();
@@ -898,7 +970,8 @@ async function renderRelatedWords(query, shown) {
 		.slice(0, 60);
 	if (!buildable.length) {
 		shown.relatedCount = 0;
-		if (status && !shown.size) setDictionarySearchStatus(shown.possibleCount || 0, 0);
+		if (status && !shown.size)
+			setDictionarySearchStatus(shown.possibleCount || 0, 0, shown.spellingCount || 0);
 		return;
 	}
 	const frag = document.createDocumentFragment();
@@ -909,7 +982,12 @@ async function renderRelatedWords(query, shown) {
 	for (const word of buildable) frag.appendChild(dictWordRow(word));
 	results.appendChild(frag);
 	shown.relatedCount = buildable.length;
-	if (status) setDictionarySearchStatus(shown.possibleCount || 0, buildable.length);
+	if (status)
+		setDictionarySearchStatus(
+			shown.possibleCount || 0,
+			buildable.length,
+			shown.spellingCount || 0
+		);
 }
 async function openDictionaryModal() {
 	const modal = document.getElementById('dictionaryModal');
@@ -917,10 +995,17 @@ async function openDictionaryModal() {
 	const status = document.getElementById('dictionaryStatus');
 	if (!modal || !search || !status) return;
 	status.textContent = 'Loading dictionary...';
-	if (!modal.open) modal.showModal();
+	if (!modal.open) {
+		modal.showModal();
+		updateModalScrollLock();
+	}
 	search.focus();
 	await Promise.all([loadDictionaryWords(), loadCustomWords()]);
 	renderDictionaryWords();
+}
+function updateModalScrollLock() {
+	const anyOpen = !!document.querySelector('dialog[open]');
+	document.body.classList.toggle('modal-open', anyOpen);
 }
 function bindDictionaryModal() {
 	const close = document.getElementById('dictionaryCloseBtn');
@@ -939,6 +1024,7 @@ function bindDictionaryModal() {
 			renderDictionaryWords();
 		});
 	if (modal) {
+		modal.addEventListener('close', updateModalScrollLock);
 		modal.addEventListener('click', (e) => {
 			if (e.target === modal) modal.close();
 		});
@@ -948,7 +1034,10 @@ function openQrShareModal() {
 	const modal = document.getElementById('qrShareModal');
 	if (!modal) return;
 	updateQrShare();
-	if (!modal.open) modal.showModal();
+	if (!modal.open) {
+		modal.showModal();
+		updateModalScrollLock();
+	}
 }
 function bindQrShareModal() {
 	const modal = document.getElementById('qrShareModal');
@@ -957,6 +1046,7 @@ function bindQrShareModal() {
 	if (close) close.addEventListener('click', () => modal && modal.close());
 	if (copy) copy.addEventListener('click', (e) => copyShareLink(e.currentTarget));
 	if (modal) {
+		modal.addEventListener('close', updateModalScrollLock);
 		modal.addEventListener('click', (e) => {
 			if (e.target === modal) modal.close();
 		});
@@ -1340,6 +1430,27 @@ function unpackWordCounts(raw) {
 	}
 	return out;
 }
+function packInventory(raw) {
+	const I = raw && typeof raw === 'object' ? raw : inv();
+	return CHARS.map((ch) => Math.max(0, parseInt(I[ch], 10) || 0).toString(36)).join(',');
+}
+function unpackInventory(raw) {
+	const out = {};
+	if (typeof raw === 'string') {
+		const parts = raw.split(',');
+		for (let i = 0; i < CHARS.length; i++) {
+			const n = parseInt(parts[i] || '', 36);
+			out[CHARS[i]] = isNaN(n) || n < 0 ? DEFAULT_INV[CHARS[i]] || 0 : n;
+		}
+		return out;
+	}
+	const source = raw && typeof raw === 'object' ? raw : {};
+	for (const ch of CHARS) {
+		const n = parseInt(source[ch], 10);
+		out[ch] = isNaN(n) || n < 0 ? DEFAULT_INV[ch] || 0 : n;
+	}
+	return out;
+}
 function mergeWordCounts(target, incoming) {
 	const out = target && typeof target === 'object' ? target : {};
 	const next = unpackWordCounts(incoming);
@@ -1356,6 +1467,7 @@ function sharePayload(wordUses, hiddenWords) {
 		v: 3,
 		t: new Date().toISOString(),
 		h: Math.max(0, parseInt(state.highScore, 10) || 0),
+		i: packInventory(state.inv),
 		w: packWordCounts(wordUses),
 		x: packWordCounts(hiddenWords),
 		s: SIGNS.map((sign) => {
@@ -1454,6 +1566,7 @@ function decodeShare(input) {
 			version: data.v || 3,
 			savedAt: data.t || '',
 			highScore: data.h || 0,
+			inv: unpackInventory(data.i),
 			wordUses: unpackWordCounts(data.w),
 			hiddenWords: unpackWordCounts(data.x),
 			signs: data.s.map((item) => ({
@@ -1476,6 +1589,7 @@ function applyShare(data, rebind) {
 	if (!state.text || typeof state.text !== 'object') state.text = {};
 	if (!state.preview || typeof state.preview !== 'object') state.preview = {};
 	state.highScore = Math.max(state.highScore || 0, parseInt(data.highScore, 10) || 0);
+	if (data.inv) state.inv = unpackInventory(data.inv);
 	state.wordUses = mergeWordCounts(state.wordUses, data.wordUses);
 	state.hiddenWords = mergeWordCounts(state.hiddenWords, data.hiddenWords);
 	updateHighScoreBadge(false);
@@ -1499,6 +1613,7 @@ function applyShare(data, rebind) {
 	saveState();
 	buildEntry();
 	if (rebind !== false) bindEntryActions();
+	buildInv();
 	calculate();
 	updateQrShare();
 }

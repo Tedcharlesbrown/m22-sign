@@ -1800,6 +1800,9 @@ function animateCutSelection(preview, text, start, end) {
 		if (!tile) continue;
 		const rect = tile.getBoundingClientRect();
 		const clone = tile.cloneNode(true);
+		const tileStyle = getComputedStyle(tile);
+		const val = tile.querySelector('.val');
+		const cloneVal = clone.querySelector('.val');
 		const delay = Math.min(pos.col * 32, 520);
 		clone.classList.add('tile-cutclone', 'cutout');
 		clone.style.position = 'fixed';
@@ -1807,8 +1810,18 @@ function animateCutSelection(preview, text, start, end) {
 		clone.style.top = rect.top + 'px';
 		clone.style.width = rect.width + 'px';
 		clone.style.height = rect.height + 'px';
+		clone.style.fontSize = tileStyle.fontSize;
+		clone.style.borderRadius = tileStyle.borderRadius;
+		clone.style.lineHeight = tileStyle.lineHeight;
 		clone.style.animationDelay = delay + 'ms';
 		clone.style.animationDuration = '280ms';
+		if (val && cloneVal) {
+			const valStyle = getComputedStyle(val);
+			cloneVal.style.display = valStyle.display;
+			cloneVal.style.fontSize = valStyle.fontSize;
+			cloneVal.style.right = valStyle.right;
+			cloneVal.style.bottom = valStyle.bottom;
+		}
 		document.body.appendChild(clone);
 		setTimeout(() => clone.remove(), delay + 360);
 	}

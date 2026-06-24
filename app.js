@@ -468,10 +468,6 @@ function fillTilePreview(el, text, shortSet, animate, meta) {
 	finishWord();
 	const totalScore = score;
 	if (meta) meta.score = totalScore;
-	const foot = document.createElement('div');
-	foot.className = 'previewscore';
-	foot.textContent = 'Total score: ' + totalScore;
-	el.appendChild(foot);
 	if (animate === 'all' || animate === 'paste') {
 		const delayStep = animate === 'paste' ? 32 : 12;
 		const maxDelay = animate === 'paste' ? 520 : 180;
@@ -506,6 +502,10 @@ function renderInputPreview(preview, text, signKey, field, animate) {
 	const shortSet = field === 'next' ? currentShortSet : null;
 	const shortSig = shortSet ? [...shortSet].join('') : '';
 	fillTilePreview(preview, text, shortSet, animate, meta);
+	const scoreEl = preview.nextElementSibling;
+	if (scoreEl && scoreEl.classList.contains('previewscore')) {
+		scoreEl.textContent = 'Total score: ' + (meta.score || 0);
+	}
 	preview.dataset.renderText = text;
 	preview.dataset.renderShortSig = shortSig;
 	preview.dataset.renderBonusSig = String(meta.bonusSeed || '');
@@ -626,7 +626,11 @@ function ioCol(label, cls, signKey, field, val) {
 	preview.setAttribute('aria-hidden', 'true');
 	preview.dataset.signKey = signKey;
 	preview.dataset.field = field;
-	fillTilePreview(preview, ta.value, null, false, ensurePreviewMeta(signKey, field));
+	const scoreEl = document.createElement('div');
+	scoreEl.className = 'previewscore';
+	const meta = ensurePreviewMeta(signKey, field);
+	fillTilePreview(preview, ta.value, null, false, meta);
+	scoreEl.textContent = 'Total score: ' + (meta.score || 0);
 	ta.addEventListener('focus', warmAudio);
 	ta.addEventListener('pointerdown', warmAudio);
 	ta.addEventListener('input', (e) => {
@@ -655,6 +659,7 @@ function ioCol(label, cls, signKey, field, val) {
 	col.appendChild(l);
 	col.appendChild(ta);
 	col.appendChild(preview);
+	col.appendChild(scoreEl);
 	return col;
 }
 let audioCtx = null;
@@ -963,6 +968,10 @@ function calculate() {
 			animate,
 			meta
 		);
+		const scoreEl = preview.nextElementSibling;
+		if (scoreEl && scoreEl.classList.contains('previewscore')) {
+			scoreEl.textContent = 'Total score: ' + (meta.score || 0);
+		}
 	});
 
 	// Step 1 bring

@@ -13,6 +13,7 @@
 	</head>
 	<body>
 		<div class="wrap">
+			<div class="highscore" id="highScoreBadge">High score: 0</div>
 			<header>
 				<div class="rack" aria-hidden="true">
 					<span class="word" id="wm1"></span>
@@ -82,7 +83,11 @@
 				</details>
 			</section>
 		</div>
-		<footer class="felt-footer">Love, Ted</footer>
+		<footer class="felt-footer">
+			<span>Love, Ted</span>
+			<button type="button" class="preview-random" id="randomizeBonusesBtn">randomize</button>
+			<button type="button" class="preview-random" id="clearHighScoreBtn">clear</button>
+		</footer>
 
 		<script src="app.js"></script>
 	</body>

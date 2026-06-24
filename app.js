@@ -5,6 +5,11 @@ const DIGITS = '1234567890'.split('');
 const SYMBOLS = [',', '.', '-', '/', ':', '!', '?', '&', '%', ';', '"', '$', '@'];
 const CHARS = [...LETTERS, ...DIGITS, ...SYMBOLS];
 const CHARSET = new Set(CHARS);
+const PREVIEW_ROWS = 4;
+const PREVIEW_COLS = 17;
+const PREVIEW_CELLS = PREVIEW_ROWS * PREVIEW_COLS;
+const BONUS_COUNTS = { dl: 5, tl: 2, dw: 3, tw: 1 };
+const BONUS_LABELS = { dl: 'DL', tl: 'TL', dw: 'DW', tw: 'TW' };
 const TILE_EQUIV = { 9: '6', '-': 'I', '/': 'I' };
 const TILE_POOL_LABEL = { 6: '6/9', I: 'I/-//' };
 const VALUES = {
@@ -87,7 +92,7 @@ async function loadDefaultInv() {
 
 const STORE_KEY = 'signswap.v2';
 
-let state = { inv: {}, text: {} };
+let state = { inv: {}, text: {}, preview: {}, highScore: 0 };
 
 function loadState() {
 	try {
@@ -171,39 +176,252 @@ function poolCounts(map) {
 	for (const ch of CHARS) addPoolCount(out, ch, map[ch] || 0);
 	return out;
 }
-function fillTilePreview(el, text, shortSet, animate) {
+function normalizeBonusBoard(raw) {
+	const valid = new Set(Object.keys(BONUS_LABELS));
+	const board = Array.isArray(raw) ? raw.slice(0, PREVIEW_CELLS) : [];
+	while (board.length < PREVIEW_CELLS) board.push('');
+	return board.map((bonus, i) => (i > 0 && valid.has(bonus) ? bonus : ''));
+}
+function makeSeed() {
+	return Math.floor(Math.random() * 0x100000000) >>> 0;
+}
+function localDateKey(d) {
+	const date = d || new Date();
+	const pad = (n) => String(n).padStart(2, '0');
+	return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
+}
+function seededRandom(seed) {
+	let n = seed >>> 0;
+	return () => {
+		n = (n + 0x6d2b79f5) >>> 0;
+		let t = n;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+function randomBonusBoard(seed) {
+	const rand = seededRandom(seed || makeSeed());
+	const bonuses = [];
+	for (const bonus of ['dl', 'dw', 'tl', 'tw']) {
+		for (let i = 0; i < BONUS_COUNTS[bonus]; i++) bonuses.push(bonus);
+	}
+	for (let boardAttempt = 0; boardAttempt < 100; boardAttempt++) {
+		const board = Array(PREVIEW_CELLS).fill('');
+		const shuffled = bonuses.slice();
+		for (let i = shuffled.length - 1; i > 0; i--) {
+			const j = Math.floor(rand() * (i + 1));
+			[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+		}
+		const placed = [];
+		let complete = true;
+		for (const bonus of shuffled) {
+			let picked = -1;
+			for (let attempts = 0; attempts < 400 && picked < 0; attempts++) {
+				const idx = 1 + Math.floor(rand() * (PREVIEW_CELLS - 1));
+				const row = Math.floor(idx / PREVIEW_COLS);
+				const col = idx % PREVIEW_COLS;
+				if (board[idx]) continue;
+				if (
+					placed.some(
+						(spot) => spot.col === col || (spot.row === row && Math.abs(spot.col - col) <= 4)
+					)
+				)
+					continue;
+				picked = idx;
+			}
+			if (picked < 0) {
+				complete = false;
+				break;
+			}
+			board[picked] = bonus;
+			placed.push({ row: Math.floor(picked / PREVIEW_COLS), col: picked % PREVIEW_COLS });
+		}
+		if (complete) return board;
+	}
+	return Array(PREVIEW_CELLS).fill('');
+}
+function previewKey(signKey, field) {
+	return signKey + ':' + field;
+}
+function normalizePreviewMeta(raw) {
+	const seed = Number.isInteger(raw && raw.bonusSeed) ? raw.bonusSeed >>> 0 : makeSeed();
+	const bonuses = normalizeBonusBoard(raw && raw.bonuses);
+	return {
+		bonusSeed: seed,
+		bonuses: bonuses.some(Boolean) ? bonuses : randomBonusBoard(seed),
+		score: Math.max(0, parseInt(raw && raw.score, 10) || 0),
+		dateKey: typeof (raw && raw.dateKey) === 'string' ? raw.dateKey : localDateKey(),
+	};
+}
+function ensurePreviewMeta(signKey, field) {
+	if (!state.preview || typeof state.preview !== 'object') state.preview = {};
+	const key = previewKey(signKey, field);
+	state.preview[key] = normalizePreviewMeta(state.preview[key]);
+	return state.preview[key];
+}
+function updateHighScoreBadge(isNew) {
+	const el = document.getElementById('highScoreBadge');
+	if (!el) return;
+	el.textContent = 'High score: ' + (state.highScore || 0);
+	if (isNew) {
+		el.classList.remove('new');
+		void el.offsetWidth;
+		el.classList.add('new');
+	}
+}
+function commitHighScore(score) {
+	const n = Math.max(0, parseInt(score, 10) || 0);
+	if (n <= (state.highScore || 0)) return false;
+	state.highScore = n;
+	updateHighScoreBadge(true);
+	return true;
+}
+function clearHighScore() {
+	state.highScore = 0;
+	updateHighScoreBadge(false);
+	saveState();
+}
+function randomizePreviewBonuses() {
+	for (const sign of SIGNS) {
+		for (const field of ['now', 'next']) {
+			const meta = ensurePreviewMeta(sign.key, field);
+			meta.bonusSeed = makeSeed();
+			meta.bonuses = randomBonusBoard(meta.bonusSeed);
+			meta.dateKey = localDateKey();
+		}
+	}
+	calculate();
+	saveState();
+}
+function rotateNextPreviewBonusesIfNeeded() {
+	const today = localDateKey();
+	let changed = false;
+	for (const sign of SIGNS) {
+		const meta = ensurePreviewMeta(sign.key, 'next');
+		if (meta.dateKey === today) continue;
+		meta.bonusSeed = makeSeed();
+		meta.bonuses = randomBonusBoard(meta.bonusSeed);
+		meta.score = 0;
+		meta.dateKey = today;
+		changed = true;
+	}
+	if (changed) saveState();
+}
+function scheduleNextBonusRotation() {
+	const now = new Date();
+	const next = new Date(now);
+	next.setHours(24, 0, 1, 0);
+	setTimeout(() => {
+		rotateNextPreviewBonusesIfNeeded();
+		calculate();
+		scheduleNextBonusRotation();
+	}, Math.max(1000, next.getTime() - now.getTime()));
+}
+function fillTilePreview(el, text, shortSet, animate, meta) {
 	el.innerHTML = '';
+	const bonuses = normalizeBonusBoard(meta && meta.bonuses);
+	const rows = [];
+	for (let r = 0; r < PREVIEW_ROWS; r++) {
+		const row = document.createElement('div');
+		row.className = 'previewline';
+		for (let c = 0; c < PREVIEW_COLS; c++) {
+			const idx = r * PREVIEW_COLS + c;
+			const hole = document.createElement('span');
+			hole.className = 'previewhole';
+			if (r === 0 && c === 0) hole.classList.add('star');
+			const bonus = bonuses[idx];
+			if (bonus) {
+				hole.classList.add('bonus', bonus);
+				hole.dataset.bonus = BONUS_LABELS[bonus];
+			}
+			hole.style.setProperty('--preview-row', r);
+			hole.style.setProperty('--preview-col', c);
+			row.appendChild(hole);
+		}
+		rows.push(row);
+		el.appendChild(row);
+	}
 	let score = 0;
+	let wordScore = 0;
+	let wordMultiplier = 1;
 	let lastTile = null;
+	let rowIdx = 0;
+	let colIdx = 0;
+	function nextCell() {
+		colIdx++;
+		if (colIdx >= PREVIEW_COLS) {
+			rowIdx++;
+			colIdx = 0;
+		}
+	}
+	function nextRow() {
+		rowIdx++;
+		colIdx = 0;
+	}
+	function finishWord() {
+		score += wordScore * wordMultiplier;
+		wordScore = 0;
+		wordMultiplier = 1;
+	}
+	function placeTile(ch) {
+		if (rowIdx >= PREVIEW_ROWS) return false;
+		const idx = rowIdx * PREVIEW_COLS + colIdx;
+		const cell = rows[rowIdx].children[colIdx];
+		const tile = tileEl(ch, shortSet && shortSet.has(ch) ? 'short' : '');
+		const bonus = idx === 0 ? 'dw' : bonuses[idx];
+		cell.appendChild(tile);
+		const value = VALUES[ch] || 0;
+		const letterMultiplier = bonus === 'dl' ? 2 : bonus === 'tl' ? 3 : 1;
+		if (bonus === 'dw') wordMultiplier *= 2;
+		if (bonus === 'tw') wordMultiplier *= 3;
+		wordScore += value * letterMultiplier;
+		lastTile = tile;
+		nextCell();
+		return true;
+	}
 	const lines = String(text || '')
 		.toUpperCase()
 		.split(/\r?\n/);
 	for (const line of lines) {
-		const row = document.createElement('div');
-		row.className = 'previewline';
+		let lineHadContent = false;
 		const parts = line.split(/(\s+)/);
 		for (const part of parts) {
 			if (!part) continue;
 			if (/^\s+$/.test(part)) {
-				for (let i = 0; i < part.length; i++) {
-					row.appendChild(document.createElement('span')).className = 'previewspace';
+				lineHadContent = true;
+				finishWord();
+				for (let i = 0; i < part.length && rowIdx < PREVIEW_ROWS; i++) {
+					nextCell();
 				}
 				continue;
 			}
-			const word = document.createElement('span');
-			word.className = 'previewword';
-			for (const ch of part) {
-				if (!CHARSET.has(ch)) continue;
-				score += VALUES[ch] || 0;
-				lastTile = word.appendChild(tileEl(ch, shortSet && shortSet.has(ch) ? 'short' : ''));
+			const chars = [...part].filter((ch) => CHARSET.has(ch));
+			if (!chars.length) continue;
+			lineHadContent = true;
+			if (colIdx > 0 && chars.length <= PREVIEW_COLS - colIdx) {
+				// stay on this row
+			} else if (colIdx > 0 && chars.length <= PREVIEW_COLS) {
+				nextRow();
 			}
-			if (word.childNodes.length) row.appendChild(word);
+			for (const ch of chars) {
+				if (!placeTile(ch)) break;
+			}
 		}
-		el.appendChild(row);
+		finishWord();
+		if (rowIdx >= PREVIEW_ROWS) break;
+		if (lineHadContent) {
+			if (colIdx > 0) nextRow();
+		} else {
+			nextRow();
+		}
 	}
+	finishWord();
+	const totalScore = score;
+	if (meta) meta.score = totalScore;
 	const foot = document.createElement('div');
 	foot.className = 'previewscore';
-	foot.textContent = 'Total score: ' + score;
+	foot.textContent = 'Total score: ' + totalScore;
 	el.appendChild(foot);
 	if (animate && lastTile) lastTile.classList.add('slam');
 }
@@ -312,14 +530,14 @@ function ioCol(label, cls, signKey, field, val) {
 	preview.setAttribute('aria-hidden', 'true');
 	preview.dataset.signKey = signKey;
 	preview.dataset.field = field;
-	fillTilePreview(preview, ta.value);
+	fillTilePreview(preview, ta.value, null, false, ensurePreviewMeta(signKey, field));
 	ta.addEventListener('focus', warmAudio);
 	ta.addEventListener('pointerdown', warmAudio);
 	ta.addEventListener('input', () => {
 		txt(signKey)[field] = ta.value;
 		preview.dataset.animateNext = '1';
-		saveState();
 		calculate();
+		saveState();
 	});
 	ta.addEventListener('keydown', (e) => playTileSound(e.key));
 	col.appendChild(l);
@@ -516,7 +734,13 @@ function calculate() {
 		const field = preview.dataset.field;
 		const animate = preview.dataset.animateNext === '1';
 		delete preview.dataset.animateNext;
-		fillTilePreview(preview, t[field] || '', field === 'next' ? shortSet : null, animate);
+		fillTilePreview(
+			preview,
+			t[field] || '',
+			field === 'next' ? shortSet : null,
+			animate,
+			ensurePreviewMeta(preview.dataset.signKey, field)
+		);
 	});
 
 	// Step 1 bring
@@ -758,13 +982,21 @@ function bindEntryActions() {
 		if (!confirm('Confirm, this will remove the current sign.')) return;
 		for (const sign of SIGNS) {
 			const t = txt(sign.key);
+			const nextMeta = ensurePreviewMeta(sign.key, 'next');
+			commitHighScore(nextMeta.score);
 			t.now = t.next;
 			t.next = '';
+			if (!state.preview || typeof state.preview !== 'object') state.preview = {};
+			const nowKey = previewKey(sign.key, 'now');
+			const nextKey = previewKey(sign.key, 'next');
+			state.preview[nowKey] = normalizePreviewMeta(nextMeta);
+			state.preview[nextKey] = normalizePreviewMeta(null);
+			state.preview[nextKey].dateKey = localDateKey();
 		}
-		saveState();
 		buildEntry();
 		bindEntryActions();
 		calculate();
+		saveState();
 		window.scrollTo({ top: 0, behavior: 'smooth' });
 	});
 }
@@ -859,16 +1091,26 @@ function loadStateFile(file) {
 function normalizeLoadedState(data) {
 	const raw = data && data.state ? data.state : data;
 	if (!raw || typeof raw !== 'object') throw new Error('Invalid state');
-	const next = { inv: {}, text: {} };
+	const next = { inv: {}, text: {}, preview: {}, highScore: 0 };
+	next.highScore = Math.max(0, parseInt(raw.highScore, 10) || 0);
 	const rawInv = raw.inv && typeof raw.inv === 'object' ? raw.inv : {};
 	for (const ch of CHARS) {
 		const n = parseInt(rawInv[ch], 10);
 		next.inv[ch] = isNaN(n) || n < 0 ? DEFAULT_INV[ch] || 0 : n;
 	}
 	const rawText = raw.text && typeof raw.text === 'object' ? raw.text : {};
+	const rawPreview = raw.preview && typeof raw.preview === 'object' ? raw.preview : {};
+	const legacyMeta =
+		Array.isArray(raw.previewBonuses) && raw.previewBonuses.some(Boolean)
+			? { bonusSeed: makeSeed(), bonuses: normalizeBonusBoard(raw.previewBonuses), score: 0 }
+			: null;
 	for (const sign of SIGNS) {
 		const t = rawText[sign.key] && typeof rawText[sign.key] === 'object' ? rawText[sign.key] : {};
 		next.text[sign.key] = { now: String(t.now || ''), next: String(t.next || '') };
+		for (const field of ['now', 'next']) {
+			const key = previewKey(sign.key, field);
+			next.preview[key] = normalizePreviewMeta(rawPreview[key] || legacyMeta);
+		}
 	}
 	return next;
 }
@@ -943,14 +1185,14 @@ async function init() {
 	await loadDefaultInv();
 	const saved = loadState();
 	if (saved) {
-		state = Object.assign({ inv: {}, text: {} }, saved);
-		if (!state.inv) state.inv = {};
-		if (!state.text) state.text = {};
+		state = normalizeLoadedState(saved);
 	}
+	rotateNextPreviewBonusesIfNeeded();
 	buildWordmark();
 	loadTaglineQuote();
 	buildEntry();
 	buildInv();
+	updateHighScoreBadge(false);
 	calculate();
 
 	bindEntryActions();
@@ -967,7 +1209,10 @@ async function init() {
 			calculate();
 		}
 	});
+	document.getElementById('randomizeBonusesBtn').addEventListener('click', randomizePreviewBonuses);
+	document.getElementById('clearHighScoreBtn').addEventListener('click', clearHighScore);
 	window.addEventListener('beforeprint', preparePrintScaling);
 	window.addEventListener('afterprint', clearPrintScaling);
+	scheduleNextBonusRotation();
 }
 init();

@@ -12,7 +12,7 @@ const PREVIEW_CELLS = PREVIEW_ROWS * PREVIEW_COLS;
 const BONUS_COUNTS = { dl: 5, tl: 2, dw: 3, tw: 1 };
 const BONUS_LABELS = { dl: 'DL', tl: 'TL', dw: 'DW', tw: 'TW' };
 const TILE_EQUIV = { 9: '6', '-': 'I', '/': 'I' };
-const TILE_POOL_LABEL = { 6: '6/9', I: 'I/-//' };
+const TILE_POOL_LABEL = { 6: '6/9', I: 'I or /' };
 const VALUES = {
 	A: 1,
 	B: 3,
@@ -94,6 +94,7 @@ async function loadDefaultInv() {
 const STORE_KEY = 'signswap.v2';
 
 let state = { inv: {}, text: {}, preview: {}, highScore: 0 };
+let currentShortSet = new Set();
 
 function loadState() {
 	try {
@@ -109,6 +110,16 @@ function saveState() {
 	try {
 		localStorage.setItem(STORE_KEY, JSON.stringify(state));
 	} catch (e) {}
+}
+let calculateTimer = 0;
+let saveTimer = 0;
+function scheduleCalculate(delay) {
+	clearTimeout(calculateTimer);
+	calculateTimer = setTimeout(calculate, delay == null ? 90 : delay);
+}
+function scheduleSaveState(delay) {
+	clearTimeout(saveTimer);
+	saveTimer = setTimeout(saveState, delay == null ? 160 : delay);
 }
 
 function inv() {
@@ -322,9 +333,7 @@ function scheduleNextBonusRotation() {
 function fillTilePreview(el, text, shortSet, animate, meta) {
 	el.innerHTML = '';
 	const bonuses = normalizeBonusBoard(meta && meta.bonuses);
-	const lines = String(text || '')
-		.toUpperCase()
-		.split(/\r?\n/);
+	const lines = previewLines(text);
 	const rows = [];
 	function bonusFor(row, col) {
 		if (col >= PREVIEW_COLS) return '';
@@ -437,6 +446,31 @@ function fillTilePreview(el, text, shortSet, animate, meta) {
 		lastTile.classList.add('slam');
 	}
 }
+function previewLines(text) {
+	const lines = [];
+	let line = '';
+	for (const ch of String(text || '').toUpperCase()) {
+		if (ch === '\r') continue;
+		if (ch === '\n') {
+			lines.push(line);
+			if (lines.length >= PREVIEW_ROWS) return lines;
+			line = '';
+		} else {
+			line += ch;
+		}
+	}
+	lines.push(line);
+	return lines;
+}
+function renderInputPreview(preview, text, signKey, field, animate) {
+	const meta = ensurePreviewMeta(signKey, field);
+	const shortSet = field === 'next' ? currentShortSet : null;
+	const shortSig = shortSet ? [...shortSet].join('') : '';
+	fillTilePreview(preview, text, shortSet, animate, meta);
+	preview.dataset.renderText = text;
+	preview.dataset.renderShortSig = shortSig;
+	preview.dataset.renderBonusSig = String(meta.bonusSeed || '');
+}
 
 /* counting */
 function countText(text, counts, unknown) {
@@ -548,8 +582,11 @@ function ioCol(label, cls, signKey, field, val) {
 	ta.addEventListener('input', () => {
 		txt(signKey)[field] = ta.value;
 		if (!preview.dataset.animateNext) preview.dataset.animateNext = '1';
-		calculate();
-		saveState();
+		const animate = preview.dataset.animateNext;
+		delete preview.dataset.animateNext;
+		renderInputPreview(preview, ta.value, signKey, field, animate);
+		scheduleCalculate();
+		scheduleSaveState();
 	});
 	ta.addEventListener('keydown', playTileSound);
 	ta.addEventListener('cut', (e) => {
@@ -605,8 +642,8 @@ function handleCut(e, ta, preview, signKey, field) {
 			ta.value = text.slice(0, start) + text.slice(end);
 			ta.setSelectionRange(start, start);
 			txt(signKey)[field] = ta.value;
-			calculate();
-			saveState();
+			scheduleCalculate(0);
+			scheduleSaveState(0);
 		}, 620);
 	}
 }
@@ -781,11 +818,7 @@ function calculate() {
 	const poolSwapUsed = {};
 	for (const ch of CHARS) {
 		const key = tileKey(ch);
-		const validCurrent = Math.min(poolCurrent[key] || 0, poolInv[key] || 0);
-		const transferable = Math.min(
-			poolRemoves[key] || 0,
-			Math.max(0, validCurrent - (poolStays[key] || 0))
-		);
+		const transferable = poolRemoves[key] || 0;
 		const availableForPool = Math.max(0, transferable - (poolSwapUsed[key] || 0));
 		const pooledMoved = Math.min(adds[ch] || 0, availableForPool);
 		if (pooledMoved > 0) {
@@ -806,31 +839,47 @@ function calculate() {
 		}
 	}
 
-	// shortages: total deployed exceeds what's owned
+	// shortages: next signs require more than the current signs plus the box can provide
 	const shortSet = new Set();
 	const shortages = [];
 	for (const ch of CHARS) {
 		const key = tileKey(ch);
 		if (key !== ch) continue;
 		const need = poolDeployed[key] || 0,
-			have = poolInv[key] || 0;
+			have = (poolInv[key] || 0) + (poolCurrent[key] || 0);
 		if (need > have) {
 			for (const mark of CHARS) if (tileKey(mark) === key) shortSet.add(mark);
 			shortages.push({ ch: tilePoolLabel(key), need, have });
 		}
 	}
+	currentShortSet = shortSet;
 
 	document.querySelectorAll('.tilepreview').forEach((preview) => {
 		const t = txt(preview.dataset.signKey);
 		const field = preview.dataset.field;
+		const textValue = t[field] || '';
+		const nextShortSig = field === 'next' ? [...shortSet].join('') : '';
+		const meta = ensurePreviewMeta(preview.dataset.signKey, field);
+		const bonusSig = String(meta.bonusSeed || '');
 		const animate = preview.dataset.animateNext;
 		delete preview.dataset.animateNext;
+		if (
+			!animate &&
+			preview.dataset.renderText === textValue &&
+			preview.dataset.renderShortSig === nextShortSig &&
+			preview.dataset.renderBonusSig === bonusSig
+		) {
+			return;
+		}
+		preview.dataset.renderText = textValue;
+		preview.dataset.renderShortSig = nextShortSig;
+		preview.dataset.renderBonusSig = bonusSig;
 		fillTilePreview(
 			preview,
-			t[field] || '',
+			textValue,
 			field === 'next' ? shortSet : null,
 			animate,
-			ensurePreviewMeta(preview.dataset.signKey, field)
+			meta
 		);
 	});
 
@@ -886,7 +935,7 @@ function calculate() {
 	const left = {};
 	for (const ch of CHARS) {
 		if (tileKey(ch) !== ch) continue;
-		const v = (poolInv[ch] || 0) - (poolDeployed[ch] || 0);
+		const v = (poolInv[ch] || 0) + (poolCurrent[ch] || 0) - (poolDeployed[ch] || 0);
 		if (v > 0) left[ch] = v;
 	}
 	if (!fillTiles(document.getElementById('leftTiles'), left, null))
@@ -899,8 +948,29 @@ function calculate() {
 	if (shortages.length) {
 		const div = document.createElement('div');
 		div.className = 'alertbar';
-		const parts = shortages.map((s) => `${s.ch} (need ${s.need}, have ${s.have})`).join(' · ');
-		div.innerHTML = `<strong>Not enough tiles.</strong> The box does not hold enough for all three signs: ${parts}. The red-ringed tiles are the ones you are short on.`;
+		const title = document.createElement('strong');
+		title.textContent = 'Not enough tiles.';
+		div.appendChild(title);
+		div.appendChild(
+			document.createTextNode(' The current signs plus the box do not hold enough for this change.')
+		);
+		const list = document.createElement('div');
+		list.className = 'shortagelist';
+		for (const s of shortages) {
+			const row = document.createElement('div');
+			row.className = 'shortagerow';
+			for (const text of [s.ch, `need ${s.need}`, `have ${s.have}`]) {
+				const cell = document.createElement('span');
+				cell.textContent = text;
+				row.appendChild(cell);
+			}
+			list.appendChild(row);
+		}
+		div.appendChild(list);
+		const note = document.createElement('div');
+		note.className = 'shortagenote';
+		note.textContent = 'The red tiles are the ones you are short on.';
+		div.appendChild(note);
 		alertSlot.appendChild(div);
 	}
 
@@ -1322,5 +1392,9 @@ async function init() {
 	window.addEventListener('beforeprint', preparePrintScaling);
 	window.addEventListener('afterprint', clearPrintScaling);
 	scheduleNextBonusRotation();
+	document.body.classList.remove('app-loading');
 }
-init();
+init().catch((e) => {
+	console.error(e);
+	document.body.classList.remove('app-loading');
+});

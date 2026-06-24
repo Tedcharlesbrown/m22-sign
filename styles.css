@@ -333,7 +333,6 @@ header {
 .tilebox.short .badge {
 	background: var(--alert);
 }
-
 .card {
 	background: linear-gradient(180deg, #fff5df 0%, var(--cream) 100%);
 	border: 1px solid var(--cream-edge);

@@ -155,14 +155,41 @@ function tileCount(ch, n, short) {
 	box.appendChild(b);
 	return box;
 }
-function fillTiles(el, map, shortSet) {
+function fillTiles(el, map, shortInfo) {
 	el.innerHTML = '';
 	let any = false;
+	const missing = {};
+	const remainingShort = new Map();
+	if (shortInfo instanceof Map) {
+		for (const [key, info] of shortInfo) remainingShort.set(key, info.need || 0);
+	}
 	for (const ch of CHARS) {
 		const n = map[ch] || 0;
 		if (n > 0) {
-			el.appendChild(tileCount(ch, n, shortSet && shortSet.has(ch)));
-			any = true;
+			const info = shortInfo instanceof Map ? shortInfo.get(tileKey(ch)) : null;
+			if (info) {
+				const key = tileKey(ch);
+				const missingCount = Math.min(n, remainingShort.get(key) || 0);
+				remainingShort.set(key, Math.max(0, (remainingShort.get(key) || 0) - missingCount));
+				const haveCount = Math.max(0, n - missingCount);
+				if (haveCount > 0) {
+					el.appendChild(tileCount(ch, haveCount, false));
+					any = true;
+				}
+				if (missingCount > 0) {
+					missing[ch] = (missing[ch] || 0) + missingCount;
+					any = true;
+				}
+			} else {
+				el.appendChild(tileCount(ch, n, shortInfo && shortInfo.has && shortInfo.has(ch)));
+				any = true;
+			}
+		}
+	}
+	for (const ch of CHARS) {
+		const n = missing[ch] || 0;
+		if (n > 0) {
+			el.appendChild(tileCount(ch, n, true));
 		}
 	}
 	return any;
@@ -828,6 +855,7 @@ function calculate() {
 		const fromBox = (adds[ch] || 0) - pooledMoved;
 		if (fromBox > 0) bring[ch] = fromBox;
 	}
+	const poolBring = poolCounts(bring);
 	const remainingSwap = Object.assign({}, swap);
 	for (const s of perSign) {
 		for (const ch of CHARS) {
@@ -839,16 +867,18 @@ function calculate() {
 		}
 	}
 
-	// shortages: next signs require more than the current signs plus the box can provide
+	// shortages: the box cannot provide enough of the tiles that must be brought
 	const shortSet = new Set();
+	const shortInfo = new Map();
 	const shortages = [];
 	for (const ch of CHARS) {
 		const key = tileKey(ch);
 		if (key !== ch) continue;
-		const need = poolDeployed[key] || 0,
-			have = (poolInv[key] || 0) + (poolCurrent[key] || 0);
+		const need = poolBring[key] || 0,
+			have = poolInv[key] || 0;
 		if (need > have) {
 			for (const mark of CHARS) if (tileKey(mark) === key) shortSet.add(mark);
+			shortInfo.set(key, { have, need: need - have });
 			shortages.push({ ch: tilePoolLabel(key), need, have });
 		}
 	}
@@ -884,7 +914,7 @@ function calculate() {
 	});
 
 	// Step 1 bring
-	if (!fillTiles(document.getElementById('bringTiles'), bring, shortSet))
+	if (!fillTiles(document.getElementById('bringTiles'), bring, shortInfo))
 		document.getElementById('bringTiles').innerHTML =
 			'<div class="empty">Nothing new to bring.</div>';
 
@@ -903,7 +933,7 @@ function calculate() {
 		blk.appendChild(h);
 		const row = document.createElement('div');
 		row.className = 'tiles';
-		fillTiles(row, s.swap, shortSet);
+		fillTiles(row, s.swap, null);
 		blk.appendChild(row);
 		swapEl.appendChild(blk);
 	}
@@ -952,7 +982,7 @@ function calculate() {
 		title.textContent = 'Not enough tiles.';
 		div.appendChild(title);
 		div.appendChild(
-			document.createTextNode(' The current signs plus the box do not hold enough for this change.')
+			document.createTextNode(' The box does not hold enough tiles for this change.')
 		);
 		const list = document.createElement('div');
 		list.className = 'shortagelist';

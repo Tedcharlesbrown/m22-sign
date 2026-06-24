@@ -153,6 +153,7 @@ function tileCount(ch, n, short) {
 	b.className = 'badge';
 	b.textContent = '×' + n;
 	box.appendChild(b);
+	box.addEventListener('pointerenter', playHoverClack);
 	return box;
 }
 function fillTiles(el, map, shortInfo) {
@@ -654,6 +655,9 @@ function playTextChangeSound(text) {
 	}
 	playTileClacks(Math.min(12, Math.max(2, Math.ceil(tiles / 3))));
 }
+function playHoverClack() {
+	playTileClacks(1);
+}
 function handleCut(e, ta, preview, signKey, field) {
 	const start = ta.selectionStart || 0;
 	const end = ta.selectionEnd || 0;
@@ -779,6 +783,7 @@ function buildInv() {
 		const cell = document.createElement('div');
 		cell.className = 'invcell';
 		const tile = tileEl(ch, 'scrabble');
+		tile.addEventListener('pointerenter', playHoverClack);
 		const i = document.createElement('input');
 		i.type = 'text';
 		i.inputMode = 'numeric';

@@ -369,9 +369,7 @@ function buildInv() {
 	for (const ch of CHARS) {
 		const cell = document.createElement('div');
 		cell.className = 'invcell';
-		const c = document.createElement('span');
-		c.className = 'invchar';
-		c.textContent = ch;
+		const tile = tileEl(ch, 'scrabble');
 		const i = document.createElement('input');
 		i.type = 'text';
 		i.inputMode = 'numeric';
@@ -383,7 +381,7 @@ function buildInv() {
 			saveState();
 			calculate();
 		});
-		cell.appendChild(c);
+		cell.appendChild(tile);
 		cell.appendChild(i);
 		grid.appendChild(cell);
 	}

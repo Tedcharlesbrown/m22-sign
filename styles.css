@@ -223,6 +223,30 @@ header {
 .tile.head .val {
 	font-size: 11px;
 }
+.tile.scrabble {
+	width: 42px;
+	height: 42px;
+	border-radius: 4px;
+	background: linear-gradient(180deg, #f7eed4 0%, #e9d7ac 100%);
+	border: 1px solid #8d774f;
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.72),
+		inset 0 -2px 2px rgba(132, 105, 56, 0.28),
+	0 2px 4px rgba(0, 0, 0, 0.18);
+	color: #17140f;
+	font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+	font-size: 23px;
+	font-weight: 800;
+	letter-spacing: 0;
+	text-transform: uppercase;
+}
+.tile.scrabble .val {
+	right: 3px;
+	bottom: 1px;
+	font-size: 8px;
+	font-weight: 700;
+	opacity: 0.82;
+}
 
 .tilebox {
 	position: relative;
@@ -756,6 +780,7 @@ button:focus-visible {
 }
 .invcell {
 	display: flex;
+	flex-direction: column;
 	align-items: center;
 	gap: 8px;
 	background: #fffdf6;
@@ -764,7 +789,7 @@ button:focus-visible {
 	padding: 6px 8px;
 }
 .invcell input {
-	width: 54px;
+	width: 62px;
 	text-align: center;
 	padding: 6px 4px;
 	font: inherit;

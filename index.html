@@ -106,6 +106,22 @@
 			<div class="dict-status" id="dictionaryStatus">Loading dictionary...</div>
 			<div class="dict-results" id="dictionaryResults"></div>
 		</dialog>
+		<dialog class="qr-modal" id="qrShareModal">
+			<div class="qr-modal-head">
+				<button type="button" class="ghost" id="qrShareCloseBtn">Close</button>
+			</div>
+			<div class="qr-share-body">
+				<img id="qrShareImg" alt="QR code for the current signs" />
+				<div class="qr-share-copy">
+					<input id="qrShareLink" readonly aria-label="Phone handoff link" />
+					<div class="toolbar">
+						<button type="button" class="ghost save-action" id="copyQrShareBtn">
+							Copy phone link
+						</button>
+					</div>
+				</div>
+			</div>
+		</dialog>
 		<footer class="felt-footer">
 			<span>Love, Ted</span>
 			<button type="button" class="preview-random" id="randomizeBonusesBtn">randomize</button>
@@ -113,6 +129,7 @@
 			<button type="button" class="preview-random" id="clearStorageBtn">clear storage</button>
 		</footer>
 
+		<script src="vendor/fflate.min.js"></script>
 		<script src="app.js"></script>
 	</body>
 </html>

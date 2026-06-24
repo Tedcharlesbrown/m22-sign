@@ -190,6 +190,8 @@ async function loadDefaultInv() {
 }
 
 const STORE_KEY = 'signswap.v2';
+const SHARE_URL_TARGET_LENGTH = 2800;
+const SHARE_TEXT_MAX_LENGTH = 500;
 
 let state = { inv: {}, text: {}, preview: {}, highScore: 0, wordUses: {}, hiddenWords: {} };
 let currentShortSet = new Set();
@@ -233,6 +235,10 @@ function scheduleCalculate(delay) {
 function scheduleSaveState(delay) {
 	clearTimeout(saveTimer);
 	saveTimer = setTimeout(saveState, delay == null ? 160 : delay);
+}
+function scheduleQrRefresh() {
+	clearTimeout(scheduleQrRefresh.timer);
+	scheduleQrRefresh.timer = setTimeout(updateQrShare, 220);
 }
 
 function inv() {
@@ -938,6 +944,24 @@ function bindDictionaryModal() {
 		});
 	}
 }
+function openQrShareModal() {
+	const modal = document.getElementById('qrShareModal');
+	if (!modal) return;
+	updateQrShare();
+	if (!modal.open) modal.showModal();
+}
+function bindQrShareModal() {
+	const modal = document.getElementById('qrShareModal');
+	const close = document.getElementById('qrShareCloseBtn');
+	const copy = document.getElementById('copyQrShareBtn');
+	if (close) close.addEventListener('click', () => modal && modal.close());
+	if (copy) copy.addEventListener('click', (e) => copyShareLink(e.currentTarget));
+	if (modal) {
+		modal.addEventListener('click', (e) => {
+			if (e.target === modal) modal.close();
+		});
+	}
+}
 function seededRandom(seed) {
 	let n = seed >>> 0;
 	return () => {
@@ -991,6 +1015,15 @@ function randomBonusBoard(seed) {
 }
 function previewKey(signKey, field) {
 	return signKey + ':' + field;
+}
+function previewMetaFromSeed(seed, signKey, field, dateKey) {
+	const n = Number.isFinite(seed) ? seed >>> 0 : dailyBonusSeed(signKey, field, dateKey);
+	return {
+		bonusSeed: n,
+		bonuses: randomBonusBoard(n),
+		score: 0,
+		dateKey,
+	};
 }
 function normalizePreviewMeta(raw, signKey, field) {
 	const dateKey = typeof (raw && raw.dateKey) === 'string' ? raw.dateKey : localDateKey();
@@ -1237,6 +1270,293 @@ function renderInputPreview(preview, text, signKey, field, animate) {
 	preview.dataset.renderBonusSig = String(meta.bonusSeed || '');
 }
 
+function utf8ToBase64Url(text) {
+	return bytesToBase64Url(new TextEncoder().encode(text));
+}
+function bytesToBase64Url(bytes) {
+	let binary = '';
+	for (let i = 0; i < bytes.length; i += 0x8000) {
+		binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+	}
+	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function base64UrlToBytes(text) {
+	const padded = String(text || '').replace(/-/g, '+').replace(/_/g, '/');
+	const binary = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, '='));
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return bytes;
+}
+function base64UrlToUtf8(text) {
+	const bytes = base64UrlToBytes(text);
+	return new TextDecoder().decode(bytes);
+}
+function fflateCodec() {
+	const codec = window.fflate;
+	return codec && codec.deflateSync && codec.inflateSync && codec.strToU8 && codec.strFromU8
+		? codec
+		: null;
+}
+function shareWordCounts(raw) {
+	const out = {};
+	const source = raw && typeof raw === 'object' ? raw : {};
+	for (const key in source) {
+		const word = String(key).toUpperCase();
+		const n = parseInt(source[key], 10);
+		if (/^[A-Z]{2,17}$/.test(word) && n > 0) out[word] = n;
+	}
+	return out;
+}
+function shareTextValue(text) {
+	return String(text || '').slice(0, SHARE_TEXT_MAX_LENGTH);
+}
+function sortedVisibleWordUses() {
+	const uses = shareWordCounts(state.wordUses);
+	const hidden = shareWordCounts(state.hiddenWords);
+	return Object.entries(uses)
+		.filter(([word, count]) => count >= 2 && !hidden[word])
+		.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+function sortedHiddenWords() {
+	return Object.entries(shareWordCounts(state.hiddenWords)).sort(
+		(a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+	);
+}
+function packWordCounts(raw) {
+	return Object.entries(shareWordCounts(raw))
+		.map(([word, count]) => word + ':' + count.toString(36))
+		.join('|');
+}
+function unpackWordCounts(raw) {
+	if (!raw) return {};
+	if (typeof raw === 'object') return shareWordCounts(raw);
+	const out = {};
+	for (const item of String(raw).split('|')) {
+		if (!item) continue;
+		const parts = item.split(':');
+		const word = String(parts[0] || '').toUpperCase();
+		const n = parseInt(parts[1] || '', 36);
+		if (/^[A-Z]{2,17}$/.test(word) && n > 0) out[word] = n;
+	}
+	return out;
+}
+function mergeWordCounts(target, incoming) {
+	const out = target && typeof target === 'object' ? target : {};
+	const next = unpackWordCounts(incoming);
+	for (const word in next) out[word] = Math.max(parseInt(out[word], 10) || 0, next[word]);
+	return out;
+}
+function mapFromEntries(entries) {
+	return Object.fromEntries(entries);
+}
+function sharePayload(wordUses, hiddenWords) {
+	const dateKey = localDateKey();
+	return {
+		a: 's',
+		v: 3,
+		t: new Date().toISOString(),
+		h: Math.max(0, parseInt(state.highScore, 10) || 0),
+		w: packWordCounts(wordUses),
+		x: packWordCounts(hiddenWords),
+		s: SIGNS.map((sign) => {
+			const t = txt(sign.key);
+			return [
+				sign.key,
+				shareTextValue(t.now),
+				shareTextValue(t.next),
+				ensurePreviewMeta(sign.key, 'now').bonusSeed >>> 0,
+				ensurePreviewMeta(sign.key, 'next').bonusSeed >>> 0,
+			];
+		}),
+		d: dateKey,
+	};
+}
+function shareCodeForPayload(payload) {
+	const json = JSON.stringify(payload);
+	const rawCode = utf8ToBase64Url(json);
+	const codec = fflateCodec();
+	if (codec) {
+		try {
+			const compressedCode =
+				'z.' + bytesToBase64Url(codec.deflateSync(codec.strToU8(json), { level: 9 }));
+			if (compressedCode.length < rawCode.length) return compressedCode;
+		} catch (e) {}
+	}
+	return rawCode;
+}
+function shareUrlLengthForCode(code) {
+	return window.location.href.replace(/#.*$/, '').length + '#share='.length + code.length;
+}
+function budgetedSharePayload() {
+	const saved = sortedVisibleWordUses();
+	const hidden = sortedHiddenWords();
+	const fits = (savedCount, hiddenCount) =>
+		shareUrlLengthForCode(
+			shareCodeForPayload(
+				sharePayload(
+					mapFromEntries(saved.slice(0, savedCount)),
+					mapFromEntries(hidden.slice(0, hiddenCount))
+				)
+			)
+		) <= SHARE_URL_TARGET_LENGTH;
+	function maxCount(total, isFit) {
+		let low = 0;
+		let high = total;
+		while (low < high) {
+			const mid = Math.ceil((low + high) / 2);
+			if (isFit(mid)) low = mid;
+			else high = mid - 1;
+		}
+		return low;
+	}
+	const pairedCount = maxCount(Math.min(saved.length, hidden.length), (count) =>
+		fits(count, count)
+	);
+	let savedCount = pairedCount;
+	let hiddenCount = pairedCount;
+	while (savedCount < saved.length || hiddenCount < hidden.length) {
+		const tryHidden =
+			hiddenCount < hidden.length && (hiddenCount <= savedCount || savedCount >= saved.length);
+		const nextSaved = savedCount + (tryHidden ? 0 : 1);
+		const nextHidden = hiddenCount + (tryHidden ? 1 : 0);
+		if (!fits(nextSaved, nextHidden)) break;
+		savedCount = nextSaved;
+		hiddenCount = nextHidden;
+	}
+	return sharePayload(
+		mapFromEntries(saved.slice(0, savedCount)),
+		mapFromEntries(hidden.slice(0, hiddenCount))
+	);
+}
+function shareCode() {
+	return shareCodeForPayload(budgetedSharePayload());
+}
+function shareUrl() {
+	const base = window.location.href.replace(/#.*$/, '');
+	return base + '#share=' + shareCode();
+}
+function decodeShare(input) {
+	const raw = String(input || '').trim();
+	const match = raw.match(/(?:^|[#&?])share=([^&\s]+)/);
+	const code = match ? match[1] : raw;
+	let json;
+	if (code.startsWith('z.')) {
+		const codec = fflateCodec();
+		if (!codec) throw new Error('Compressed share payload is not supported');
+		json = codec.strFromU8(codec.inflateSync(base64UrlToBytes(code.slice(2))));
+	} else {
+		json = base64UrlToUtf8(code);
+	}
+	const data = JSON.parse(json);
+	if (data && data.a === 's' && Array.isArray(data.s)) {
+		return {
+			app: 'sign_swap',
+			version: data.v || 3,
+			savedAt: data.t || '',
+			highScore: data.h || 0,
+			wordUses: unpackWordCounts(data.w),
+			hiddenWords: unpackWordCounts(data.x),
+			signs: data.s.map((item) => ({
+				key: item && item[0],
+				now: item && item[1],
+				next: item && item[2],
+				nowSeed: item && item[3],
+				nextSeed: item && item[4],
+			})),
+			dateKey: data.d,
+		};
+	}
+	if (!data || data.app !== 'sign_swap' || !Array.isArray(data.signs)) {
+		throw new Error('Invalid share payload');
+	}
+	return data;
+}
+function applyShare(data, rebind) {
+	const dateKey = typeof data.dateKey === 'string' ? data.dateKey : localDateKey();
+	if (!state.text || typeof state.text !== 'object') state.text = {};
+	if (!state.preview || typeof state.preview !== 'object') state.preview = {};
+	state.highScore = Math.max(state.highScore || 0, parseInt(data.highScore, 10) || 0);
+	state.wordUses = mergeWordCounts(state.wordUses, data.wordUses);
+	state.hiddenWords = mergeWordCounts(state.hiddenWords, data.hiddenWords);
+	updateHighScoreBadge(false);
+	invalidateDictionaryAvailability();
+	for (const sign of SIGNS) {
+		const incoming = data.signs.find((item) => item && item.key === sign.key) || {};
+		state.text[sign.key] = {
+			now: String(incoming.now || ''),
+			next: String(incoming.next || ''),
+		};
+		for (const field of ['now', 'next']) {
+			const seedKey = field + 'Seed';
+			state.preview[previewKey(sign.key, field)] = previewMetaFromSeed(
+				parseInt(incoming[seedKey], 10),
+				sign.key,
+				field,
+				dateKey
+			);
+		}
+	}
+	saveState();
+	buildEntry();
+	if (rebind !== false) bindEntryActions();
+	calculate();
+	updateQrShare();
+}
+function updateQrShare() {
+	const img = document.getElementById('qrShareImg');
+	const link = document.getElementById('qrShareLink');
+	if (!img && !link) return;
+	const url = shareUrl();
+	if (link) link.value = url;
+	if (img) {
+		const src =
+			'https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=10&data=' +
+			encodeURIComponent(url);
+		if (img.src !== src) img.src = src;
+	}
+}
+function copyShareLink(btn) {
+	const url = shareUrl();
+	const done = () => {
+		if (!btn) return;
+		const old = btn.textContent;
+		btn.textContent = 'Copied';
+		btn.classList.add('copied');
+		setTimeout(() => {
+			btn.textContent = old;
+			btn.classList.remove('copied');
+		}, 900);
+	};
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(url).then(done).catch(() => fallbackCopy(url, done));
+	} else {
+		fallbackCopy(url, done);
+	}
+}
+function promptImportShare() {
+	const raw = prompt('Paste a Sign Swap phone link or share code:');
+	if (!raw) return;
+	try {
+		applyShare(decodeShare(raw));
+		setLoadStatus('Loaded phone link.', 'good');
+	} catch (e) {
+		setLoadStatus('Could not read that phone link.', 'bad');
+	}
+}
+function importShareFromHash() {
+	const match = window.location.hash.match(/(?:^#|&)share=([^&]+)/);
+	if (!match) return false;
+	try {
+		applyShare(decodeShare(match[1]), false);
+		history.replaceState(null, '', window.location.href.replace(/#.*$/, ''));
+		setLoadStatus('Loaded phone link.', 'good');
+		return true;
+	} catch (e) {
+		setLoadStatus('Could not read the phone link.', 'bad');
+		return false;
+	}
+}
+
 /* counting */
 function countText(text, counts, unknown) {
 	for (const ch of (text || '').toUpperCase()) {
@@ -1306,6 +1626,12 @@ function buildEntry() {
 	loadInput.id = 'loadInput';
 	loadInput.accept = '.json,application/json';
 	loadInput.hidden = true;
+	const phone = document.createElement('button');
+	phone.type = 'button';
+	phone.className = 'ghost';
+	phone.id = 'phoneLinkBtn';
+	phone.textContent = 'QR';
+	actions.appendChild(phone);
 	actions.appendChild(dictionary);
 	actions.appendChild(print);
 	actions.appendChild(load);
@@ -1376,6 +1702,7 @@ function ioCol(label, cls, signKey, field, val) {
 		renderInputPreview(preview, ta.value, signKey, field, animate);
 		scheduleCalculate();
 		scheduleSaveState();
+		scheduleQrRefresh();
 	});
 	ta.addEventListener('keydown', (e) => {
 		if (handleSelectionDelete(e, ta, preview, signKey, field)) return;
@@ -2014,6 +2341,8 @@ function importCSV(file) {
 
 function bindEntryActions() {
 	document.getElementById('dictionaryBtn').addEventListener('click', openDictionaryModal);
+	document.getElementById('phoneLinkBtn').addEventListener('click', openQrShareModal);
+	updateQrShare();
 	document.getElementById('printBtn').addEventListener('click', () => {
 		printSign();
 	});
@@ -2148,6 +2477,7 @@ function loadStateFile(file) {
 			bindEntryActions();
 			buildInv();
 			calculate();
+			updateQrShare();
 			setLoadStatus('Loaded ' + file.name + '.', 'good');
 		} catch (err) {
 			setLoadStatus('Could not load ' + file.name + '. Use a Sign Swap JSON save file.', 'bad');
@@ -2270,15 +2600,17 @@ async function init() {
 		state = normalizeLoadedState(saved);
 	}
 	rotateNextPreviewBonusesIfNeeded();
+	const loadedSharedState = importShareFromHash();
 	buildWordmark();
 	loadTaglineQuote();
-	buildEntry();
+	if (!loadedSharedState) buildEntry();
 	buildInv();
 	updateHighScoreBadge(false);
 	calculate();
 
 	bindEntryActions();
 	bindDictionaryModal();
+	bindQrShareModal();
 	document.getElementById('exportBtn').addEventListener('click', exportCSV);
 	document.getElementById('importInput').addEventListener('change', (e) => {
 		if (e.target.files[0]) importCSV(e.target.files[0]);

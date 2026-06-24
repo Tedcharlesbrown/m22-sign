@@ -5,6 +5,7 @@ const DIGITS = '1234567890'.split('');
 const SYMBOLS = [',', '.', '-', '/', ':', '!', '?', '&', '%', ';', '"', '$', '@'];
 const CHARS = [...LETTERS, ...DIGITS, ...SYMBOLS];
 const CHARSET = new Set(CHARS);
+const SILENT_CHARS = new Set(["'", '’', '‘']);
 const PREVIEW_ROWS = 4;
 const PREVIEW_COLS = 17;
 const PREVIEW_CELLS = PREVIEW_ROWS * PREVIEW_COLS;
@@ -321,23 +322,40 @@ function scheduleNextBonusRotation() {
 function fillTilePreview(el, text, shortSet, animate, meta) {
 	el.innerHTML = '';
 	const bonuses = normalizeBonusBoard(meta && meta.bonuses);
+	const lines = String(text || '')
+		.toUpperCase()
+		.split(/\r?\n/);
 	const rows = [];
+	function bonusFor(row, col) {
+		if (col >= PREVIEW_COLS) return '';
+		return bonuses[row * PREVIEW_COLS + col] || '';
+	}
+	function makeHole(rowIndex, colIndex) {
+		const hole = document.createElement('span');
+		hole.className = 'previewhole';
+		if (rowIndex === 0 && colIndex === 0) hole.classList.add('star');
+		const bonus = bonusFor(rowIndex, colIndex);
+		if (bonus) {
+			hole.classList.add('bonus', bonus);
+			hole.dataset.bonus = BONUS_LABELS[bonus];
+		}
+		hole.style.setProperty('--preview-row', rowIndex);
+		hole.style.setProperty('--preview-col', colIndex);
+		return hole;
+	}
+	function ensureCell(rowIndex, colIndex) {
+		if (rowIndex >= PREVIEW_ROWS) return null;
+		const row = rows[rowIndex];
+		while (row.children.length <= colIndex) {
+			row.appendChild(makeHole(rowIndex, row.children.length));
+		}
+		return row.children[colIndex];
+	}
 	for (let r = 0; r < PREVIEW_ROWS; r++) {
 		const row = document.createElement('div');
 		row.className = 'previewline';
 		for (let c = 0; c < PREVIEW_COLS; c++) {
-			const idx = r * PREVIEW_COLS + c;
-			const hole = document.createElement('span');
-			hole.className = 'previewhole';
-			if (r === 0 && c === 0) hole.classList.add('star');
-			const bonus = bonuses[idx];
-			if (bonus) {
-				hole.classList.add('bonus', bonus);
-				hole.dataset.bonus = BONUS_LABELS[bonus];
-			}
-			hole.style.setProperty('--preview-row', r);
-			hole.style.setProperty('--preview-col', c);
-			row.appendChild(hole);
+			row.appendChild(makeHole(r, c));
 		}
 		rows.push(row);
 		el.appendChild(row);
@@ -346,14 +364,11 @@ function fillTilePreview(el, text, shortSet, animate, meta) {
 	let wordScore = 0;
 	let wordMultiplier = 1;
 	let lastTile = null;
+	const placedTiles = [];
 	let rowIdx = 0;
 	let colIdx = 0;
 	function nextCell() {
 		colIdx++;
-		if (colIdx >= PREVIEW_COLS) {
-			rowIdx++;
-			colIdx = 0;
-		}
 	}
 	function nextRow() {
 		rowIdx++;
@@ -366,10 +381,10 @@ function fillTilePreview(el, text, shortSet, animate, meta) {
 	}
 	function placeTile(ch) {
 		if (rowIdx >= PREVIEW_ROWS) return false;
-		const idx = rowIdx * PREVIEW_COLS + colIdx;
-		const cell = rows[rowIdx].children[colIdx];
+		const cell = ensureCell(rowIdx, colIdx);
+		if (!cell) return false;
 		const tile = tileEl(ch, shortSet && shortSet.has(ch) ? 'short' : '');
-		const bonus = idx === 0 ? 'dw' : bonuses[idx];
+		const bonus = rowIdx === 0 && colIdx === 0 ? 'dw' : bonusFor(rowIdx, colIdx);
 		cell.appendChild(tile);
 		const value = VALUES[ch] || 0;
 		const letterMultiplier = bonus === 'dl' ? 2 : bonus === 'tl' ? 3 : 1;
@@ -377,19 +392,15 @@ function fillTilePreview(el, text, shortSet, animate, meta) {
 		if (bonus === 'tw') wordMultiplier *= 3;
 		wordScore += value * letterMultiplier;
 		lastTile = tile;
+		placedTiles.push({ tile, row: rowIdx, col: colIdx });
 		nextCell();
 		return true;
 	}
-	const lines = String(text || '')
-		.toUpperCase()
-		.split(/\r?\n/);
 	for (const line of lines) {
-		let lineHadContent = false;
 		const parts = line.split(/(\s+)/);
 		for (const part of parts) {
 			if (!part) continue;
 			if (/^\s+$/.test(part)) {
-				lineHadContent = true;
 				finishWord();
 				for (let i = 0; i < part.length && rowIdx < PREVIEW_ROWS; i++) {
 					nextCell();
@@ -398,23 +409,13 @@ function fillTilePreview(el, text, shortSet, animate, meta) {
 			}
 			const chars = [...part].filter((ch) => CHARSET.has(ch));
 			if (!chars.length) continue;
-			lineHadContent = true;
-			if (colIdx > 0 && chars.length <= PREVIEW_COLS - colIdx) {
-				// stay on this row
-			} else if (colIdx > 0 && chars.length <= PREVIEW_COLS) {
-				nextRow();
-			}
 			for (const ch of chars) {
 				if (!placeTile(ch)) break;
 			}
 		}
 		finishWord();
 		if (rowIdx >= PREVIEW_ROWS) break;
-		if (lineHadContent) {
-			if (colIdx > 0) nextRow();
-		} else {
-			nextRow();
-		}
+		nextRow();
 	}
 	finishWord();
 	const totalScore = score;
@@ -423,14 +424,25 @@ function fillTilePreview(el, text, shortSet, animate, meta) {
 	foot.className = 'previewscore';
 	foot.textContent = 'Total score: ' + totalScore;
 	el.appendChild(foot);
-	if (animate && lastTile) lastTile.classList.add('slam');
+	if (animate === 'all' || animate === 'paste') {
+		const delayStep = animate === 'paste' ? 32 : 12;
+		const maxDelay = animate === 'paste' ? 520 : 180;
+		const duration = animate === 'paste' ? '280ms' : '';
+		placedTiles.forEach(({ tile, col }) => {
+			tile.style.animationDelay = Math.min(col * delayStep, maxDelay) + 'ms';
+			if (duration) tile.style.animationDuration = duration;
+			tile.classList.add('slam');
+		});
+	} else if (animate && lastTile) {
+		lastTile.classList.add('slam');
+	}
 }
 
 /* counting */
 function countText(text, counts, unknown) {
 	for (const ch of (text || '').toUpperCase()) {
 		if (CHARSET.has(ch)) counts[ch] = (counts[ch] || 0) + 1;
-		else if (ch.trim() !== '') unknown.add(ch);
+		else if (ch.trim() !== '' && !SILENT_CHARS.has(ch)) unknown.add(ch);
 	}
 }
 
@@ -535,11 +547,18 @@ function ioCol(label, cls, signKey, field, val) {
 	ta.addEventListener('pointerdown', warmAudio);
 	ta.addEventListener('input', () => {
 		txt(signKey)[field] = ta.value;
-		preview.dataset.animateNext = '1';
+		if (!preview.dataset.animateNext) preview.dataset.animateNext = '1';
 		calculate();
 		saveState();
 	});
-	ta.addEventListener('keydown', (e) => playTileSound(e.key));
+	ta.addEventListener('keydown', playTileSound);
+	ta.addEventListener('cut', (e) => {
+		handleCut(e, ta, preview, signKey, field);
+	});
+	ta.addEventListener('paste', (e) => {
+		preview.dataset.animateNext = 'paste';
+		playPasteSound(e);
+	});
 	col.appendChild(l);
 	col.appendChild(ta);
 	col.appendChild(preview);
@@ -552,20 +571,92 @@ function warmAudio() {
 		if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
 	} catch (e) {}
 }
-function playTileSound(key) {
-	const isTileKey = typeof key === 'string' && /^[a-z0-9]$/i.test(key);
+function playTileSound(e) {
+	const key = e && typeof e === 'object' ? e.key : e;
+	if (e && typeof e === 'object' && (e.metaKey || e.ctrlKey || e.altKey)) return;
+	const isTileKey = typeof key === 'string' && key.length === 1 && CHARSET.has(key.toUpperCase());
 	const isEditKey = key === 'Backspace' || key === 'Delete';
 	if (!isTileKey && !isEditKey) return;
+	playTileClacks(1);
+}
+function playPasteSound(e) {
+	const pasted = e.clipboardData ? e.clipboardData.getData('text') : '';
+	playTextChangeSound(pasted);
+}
+function playTextChangeSound(text) {
+	let tiles = 0;
+	for (const ch of String(text || '').toUpperCase()) {
+		if (CHARSET.has(ch)) tiles++;
+	}
+	playTileClacks(Math.min(12, Math.max(2, Math.ceil(tiles / 3))));
+}
+function handleCut(e, ta, preview, signKey, field) {
+	const start = ta.selectionStart || 0;
+	const end = ta.selectionEnd || 0;
+	if (start === end) return;
+	const text = ta.value;
+	const cut = text.slice(start, end);
+	playTextChangeSound(cut);
+	if (e.clipboardData) {
+		e.preventDefault();
+		e.clipboardData.setData('text/plain', cut);
+		animateCutSelection(preview, text, start, end);
+		setTimeout(() => {
+			ta.value = text.slice(0, start) + text.slice(end);
+			ta.setSelectionRange(start, start);
+			txt(signKey)[field] = ta.value;
+			calculate();
+			saveState();
+		}, 620);
+	}
+}
+function animateCutSelection(preview, text, start, end) {
+	for (const pos of previewPositionsForRange(text, start, end)) {
+		const row = preview.querySelectorAll('.previewline')[pos.row];
+		const tile = row && row.children[pos.col] && row.children[pos.col].querySelector('.tile');
+		if (!tile) continue;
+		tile.style.animationDelay = Math.min(pos.col * 32, 520) + 'ms';
+		tile.style.animationDuration = '280ms';
+		tile.classList.add('cutout');
+	}
+}
+function previewPositionsForRange(text, start, end) {
+	const out = [];
+	let row = 0;
+	let col = 0;
+	for (let i = 0; i < text.length && row < PREVIEW_ROWS; i++) {
+		const ch = text[i].toUpperCase();
+		if (ch === '\n') {
+			row++;
+			col = 0;
+			continue;
+		}
+		if (/\s/.test(ch)) {
+			col++;
+			continue;
+		}
+		if (!CHARSET.has(ch)) continue;
+		if (i >= start && i < end) out.push({ row, col });
+		col++;
+	}
+	return out;
+}
+function playTileClacks(count) {
 	try {
 		audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+		const play = () => {
+			for (let i = 0; i < count; i++) {
+				setTimeout(playTileClack, i * 45);
+			}
+		};
 		if (audioCtx.state === 'suspended') {
 			audioCtx
 				.resume()
-				.then(playTileClack)
+				.then(play)
 				.catch(() => {});
 			return;
 		}
-		playTileClack();
+		play();
 	} catch (e) {}
 }
 function playTileClack() {
@@ -732,7 +823,7 @@ function calculate() {
 	document.querySelectorAll('.tilepreview').forEach((preview) => {
 		const t = txt(preview.dataset.signKey);
 		const field = preview.dataset.field;
-		const animate = preview.dataset.animateNext === '1';
+		const animate = preview.dataset.animateNext;
 		delete preview.dataset.animateNext;
 		fillTilePreview(
 			preview,
@@ -966,8 +1057,7 @@ function importCSV(file) {
 
 function bindEntryActions() {
 	document.getElementById('printBtn').addEventListener('click', () => {
-		preparePrintScaling();
-		window.print();
+		printSign();
 	});
 	document.getElementById('saveBtn').addEventListener('click', saveStateFile);
 	document
@@ -998,6 +1088,23 @@ function bindEntryActions() {
 		calculate();
 		saveState();
 		window.scrollTo({ top: 0, behavior: 'smooth' });
+	});
+}
+function printSign() {
+	preparePrintScaling();
+	window.print();
+}
+function bindKeyboardShortcuts() {
+	window.addEventListener('keydown', (e) => {
+		const shortcutKey =
+			(e.metaKey || e.ctrlKey) && !e.altKey && typeof e.key === 'string'
+				? e.key.toLowerCase()
+				: '';
+		if (shortcutKey === 'p') {
+			e.preventDefault();
+			playTileClacks(3);
+			printSign();
+		}
 	});
 }
 function bindEntryDrop() {
@@ -1211,6 +1318,7 @@ async function init() {
 	});
 	document.getElementById('randomizeBonusesBtn').addEventListener('click', randomizePreviewBonuses);
 	document.getElementById('clearHighScoreBtn').addEventListener('click', clearHighScore);
+	bindKeyboardShortcuts();
 	window.addEventListener('beforeprint', preparePrintScaling);
 	window.addEventListener('afterprint', clearPrintScaling);
 	scheduleNextBonusRotation();

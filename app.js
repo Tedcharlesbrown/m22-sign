@@ -2144,6 +2144,7 @@ function calculate() {
 		}
 	}
 	currentShortSet = shortSet;
+	renderPrintSignSummary(shortSet);
 
 	document.querySelectorAll('.tilepreview').forEach((preview) => {
 		const t = txt(preview.dataset.signKey);
@@ -2276,6 +2277,74 @@ function calculate() {
 	}
 
 	document.getElementById('printDate').textContent = new Date().toLocaleDateString();
+}
+function renderPrintSignSummary(shortSet) {
+	const wrap = document.getElementById('printSigns');
+	if (!wrap) return;
+	const shortSig = shortSet ? [...shortSet].join('') : '';
+	const sig = JSON.stringify(SIGNS.map((sign) => {
+		const t = txt(sign.key);
+		return [
+			sign.key,
+			t.now || '',
+			t.next || '',
+			ensurePreviewMeta(sign.key, 'now').bonusSeed,
+			ensurePreviewMeta(sign.key, 'next').bonusSeed,
+		];
+	})) + '|' + shortSig;
+	if (!setSig(wrap, sig)) return;
+
+	wrap.innerHTML = '';
+	const title = document.createElement('h2');
+	title.textContent = 'Signs';
+	wrap.appendChild(title);
+
+	const grid = document.createElement('div');
+	grid.className = 'print-sign-grid';
+	for (const sign of SIGNS) {
+		const block = document.createElement('div');
+		block.className = 'print-sign-card';
+		const h = document.createElement('h3');
+		h.textContent = sign.label;
+		block.appendChild(h);
+		block.appendChild(
+			printPreviewCol('On the sign now', 'now', sign.key, 'now', txt(sign.key).now, null)
+		);
+		block.appendChild(
+			printPreviewCol('Up Next', 'next', sign.key, 'next', txt(sign.key).next, shortSet)
+		);
+		grid.appendChild(block);
+	}
+	wrap.appendChild(grid);
+}
+function printPreviewCol(label, cls, signKey, field, text, shortSet) {
+	const col = document.createElement('div');
+	col.className = 'print-sign-preview';
+	const l = document.createElement('div');
+	l.className = 'iolab ' + cls;
+	l.textContent = label;
+	const preview = document.createElement('div');
+	preview.className = 'tilepreview';
+	preview.setAttribute('aria-hidden', 'true');
+	preview.dataset.signKey = signKey;
+	preview.dataset.field = field;
+	const scoreEl = document.createElement('div');
+	scoreEl.className = 'previewscore';
+	const meta = ensurePreviewMeta(signKey, field);
+	fillTilePreview(preview, text, field === 'next' ? shortSet : null, false, meta);
+	scoreEl.textContent = 'Total score: ' + (meta.score || 0);
+	col.appendChild(l);
+	col.appendChild(preview);
+	col.appendChild(scoreEl);
+	return col;
+}
+function registerServiceWorker() {
+	if (!('serviceWorker' in navigator)) return;
+	window.addEventListener('load', () => {
+		navigator.serviceWorker.register('sw.js').catch((e) => {
+			console.warn('Could not register service worker.', e);
+		});
+	});
 }
 function actionBox(cls, row) {
 	const box = document.createElement('div');
@@ -2760,6 +2829,7 @@ async function init() {
 	window.addEventListener('beforeprint', preparePrintScaling);
 	window.addEventListener('afterprint', clearPrintScaling);
 	scheduleNextBonusRotation();
+	registerServiceWorker();
 	document.body.classList.remove('app-loading');
 }
 init().catch((e) => {

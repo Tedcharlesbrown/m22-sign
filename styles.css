@@ -1633,4 +1633,72 @@ dialog:not([open]) {
 		font-size: 20px;
 		margin: 0;
 	}
+	.print-signs {
+		border: 1px solid #000;
+		padding: 0.12in;
+		break-inside: avoid;
+		page-break-inside: avoid;
+	}
+	.print-signs h2 {
+		margin: 0 0 0.08in;
+		font-size: 15px;
+		color: #000;
+	}
+	.print-sign-grid {
+		display: grid;
+		gap: 0.08in;
+	}
+	.print-sign-card {
+		display: grid;
+		grid-template-columns: 1.05in minmax(0, 1fr) minmax(0, 1fr);
+		gap: 0.08in;
+		align-items: start;
+		break-inside: avoid;
+	}
+	.print-sign-card h3 {
+		margin: 0.1in 0 0;
+		font-size: 10px;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: #000;
+	}
+	.print-sign-preview {
+		min-width: 0;
+	}
+	.print-signs .iolab {
+		margin-bottom: 0.03in;
+		font-size: 8px;
+		color: #000;
+	}
+	.print-signs .tilepreview {
+		margin: 0;
+		padding: 0.04in;
+		border-radius: 0;
+		box-shadow: none;
+		overflow: hidden;
+		-webkit-print-color-adjust: exact;
+		print-color-adjust: exact;
+	}
+	.print-signs .previewline {
+		--preview-cell-size: calc((100% - 16px) / 17);
+		gap: 1px;
+		min-height: 0;
+	}
+	.print-signs .previewhole {
+		padding: 0;
+		border-radius: 0;
+	}
+	.print-signs .tilepreview .tile {
+		font-size: 7pt;
+		border-radius: 0;
+	}
+	.print-signs .tilepreview .tile .val {
+		display: none;
+	}
+	.print-signs .previewscore {
+		margin-top: 0.02in;
+		font-size: 8px;
+		color: #000;
+		text-shadow: none;
+	}
 }

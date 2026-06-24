@@ -4,11 +4,10 @@
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Sign Swap</title>
-		<link
-			rel="icon"
-			type="image/svg+xml"
-			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath fill='%23c6283d' d='M32 56s-4.2-3.1-8.9-7.1C13.1 40.4 4 31.9 4 21.6 4 13.9 10.1 8 17.7 8c4.4 0 8.6 2.1 11.3 5.5C31.7 10.1 35.9 8 40.3 8 47.9 8 54 13.9 54 21.6c0 10.3-9.1 18.8-19.1 27.3C36.2 52.9 32 56 32 56z'/%3E%3C/svg%3E"
-		/>
+		<meta name="theme-color" content="#c6283d" />
+		<link rel="manifest" href="manifest.webmanifest" />
+		<link rel="icon" type="image/svg+xml" href="app-icon.svg" />
+		<link rel="apple-touch-icon" href="app-icon-180.png" />
 		<link rel="stylesheet" href="styles.css" />
 	</head>
 	<body class="app-loading">
@@ -31,6 +30,7 @@
 					<h1>Sign change list</h1>
 					<div class="muted" id="printDate"></div>
 				</div>
+				<div class="print-signs printonly" id="printSigns"></div>
 				<div class="panel put">
 					<div class="eyebrow">Step 1 · At the box</div>
 					<h2>Bring these letters</h2>

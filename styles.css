@@ -663,6 +663,12 @@ textarea {
 .tilepreview .tile.cutout {
 	animation: tileCutOut 280ms ease-in both;
 }
+.tile.tile-cutclone.cutout {
+	animation: tileCutOut 280ms ease-in both;
+	box-sizing: border-box;
+	pointer-events: none;
+	z-index: 1000;
+}
 .tilepreview .tile.short {
 	background:
 		radial-gradient(circle at 28% 22%, rgba(255, 255, 255, 0.34), transparent 34%),

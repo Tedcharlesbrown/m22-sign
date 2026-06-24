@@ -199,6 +199,7 @@ let dictionaryWords = null;
 let dictionaryPromise = null;
 const relatedCache = new Map(); // query -> related words (uppercase), from the thesaurus
 const dictionaryApiCache = new Map(); // word -> true/false, exact dictionaryapi.dev result
+let currentBoxLeft = null;
 let relatedTimer = 0;
 let dictionaryApiTimer = 0;
 let dictionarySearchTimer = 0;
@@ -397,14 +398,17 @@ function makeDictionaryIndex(words) {
 	return { byFirst };
 }
 function inventorySignature() {
-	const I = inv();
+	const I = dictionaryAvailableTiles();
 	return CHARS.map((ch) => `${ch}:${I[ch] || 0}`).join('|');
+}
+function dictionaryAvailableTiles() {
+	return currentBoxLeft || inv();
 }
 function getBuildableWordData() {
 	const words = dictionaryWords || FALLBACK_WORDS;
 	const sig = inventorySignature() + ':' + words.length;
 	if (buildableWordCache.has(sig)) return buildableWordCache.get(sig);
-	const available = poolCounts(inv());
+	const available = poolCounts(dictionaryAvailableTiles());
 	const buildable = [];
 	for (const word of words) {
 		if (word.length > 1 && word.length <= PREVIEW_COLS && canBuildWord(word, available)) buildable.push(word);
@@ -667,7 +671,7 @@ function renderDictionaryWords() {
 	const search = document.getElementById('dictionarySearch');
 	if (!results || !status || !search) return;
 	const query = search.value;
-	const available = poolCounts(inv());
+	const available = poolCounts(dictionaryAvailableTiles());
 	const yours = matchedUsedWords(query, available);
 	const yoursSet = new Set(yours);
 	const more = possibleWords(query).filter((word) => !yoursSet.has(word));
@@ -712,7 +716,7 @@ async function renderYourWordsView() {
 	const search = document.getElementById('dictionarySearch');
 	if (!results || !status) return;
 	if (search) search.value = '';
-	const available = poolCounts(inv());
+	const available = poolCounts(dictionaryAvailableTiles());
 	const words = visibleYourWords();
 	results.innerHTML = '';
 	const frag = document.createDocumentFragment();
@@ -825,7 +829,7 @@ function scheduleExactDictionaryWord(query, shown) {
 	clearTimeout(dictionaryApiTimer);
 	const word = exactDictionaryQuery(query);
 	if (!word || shown.has(word)) return;
-	const available = poolCounts(inv());
+	const available = poolCounts(dictionaryAvailableTiles());
 	if (!canBuildWord(word, available)) return;
 	dictionaryApiTimer = setTimeout(() => renderExactDictionaryWord(query, shown), 360);
 }
@@ -876,7 +880,7 @@ async function renderRelatedWords(query, shown) {
 	const related = await fetchRelatedWords(query);
 	// Ignore stale responses if the search box changed while we waited.
 	if (dictionaryView !== 'possible' || search.value !== query) return;
-	const available = poolCounts(inv());
+	const available = poolCounts(dictionaryAvailableTiles());
 	const buildable = related
 		.filter(
 			(word) =>
@@ -1437,13 +1441,12 @@ function handleCut(e, ta, preview, signKey, field) {
 		e.preventDefault();
 		e.clipboardData.setData('text/plain', cut);
 		animateCutSelection(preview, text, start, end);
-		setTimeout(() => {
-			ta.value = text.slice(0, start) + text.slice(end);
-			ta.setSelectionRange(start, start);
-			txt(signKey)[field] = ta.value;
-			scheduleCalculate(0);
-			scheduleSaveState(0);
-		}, 620);
+		ta.value = text.slice(0, start) + text.slice(end);
+		ta.setSelectionRange(start, start);
+		txt(signKey)[field] = ta.value;
+		renderInputPreview(preview, ta.value, signKey, field, false);
+		scheduleCalculate(0);
+		scheduleSaveState(0);
 	}
 }
 function handleSelectionDelete(e, ta, preview, signKey, field) {
@@ -1452,15 +1455,15 @@ function handleSelectionDelete(e, ta, preview, signKey, field) {
 	const end = ta.selectionEnd || 0;
 	if (start === end) return false;
 	e.preventDefault();
-	playTextChangeSound(ta.value.slice(start, end));
-	animateCutSelection(preview, ta.value, start, end);
-	setTimeout(() => {
-		ta.value = ta.value.slice(0, start) + ta.value.slice(end);
-		ta.setSelectionRange(start, start);
-		txt(signKey)[field] = ta.value;
-		scheduleCalculate(0);
-		scheduleSaveState(0);
-	}, 620);
+	const text = ta.value;
+	playTextChangeSound(text.slice(start, end));
+	animateCutSelection(preview, text, start, end);
+	ta.value = text.slice(0, start) + text.slice(end);
+	ta.setSelectionRange(start, start);
+	txt(signKey)[field] = ta.value;
+	renderInputPreview(preview, ta.value, signKey, field, false);
+	scheduleCalculate(0);
+	scheduleSaveState(0);
 	return true;
 }
 function animateCutSelection(preview, text, start, end) {
@@ -1468,9 +1471,19 @@ function animateCutSelection(preview, text, start, end) {
 		const row = preview.querySelectorAll('.previewline')[pos.row];
 		const tile = row && row.children[pos.col] && row.children[pos.col].querySelector('.tile');
 		if (!tile) continue;
-		tile.style.animationDelay = Math.min(pos.col * 32, 520) + 'ms';
-		tile.style.animationDuration = '280ms';
-		tile.classList.add('cutout');
+		const rect = tile.getBoundingClientRect();
+		const clone = tile.cloneNode(true);
+		const delay = Math.min(pos.col * 32, 520);
+		clone.classList.add('tile-cutclone', 'cutout');
+		clone.style.position = 'fixed';
+		clone.style.left = rect.left + 'px';
+		clone.style.top = rect.top + 'px';
+		clone.style.width = rect.width + 'px';
+		clone.style.height = rect.height + 'px';
+		clone.style.animationDelay = delay + 'ms';
+		clone.style.animationDuration = '280ms';
+		document.body.appendChild(clone);
+		setTimeout(() => clone.remove(), delay + 360);
 	}
 }
 function previewPositionsForRange(text, start, end) {
@@ -1780,8 +1793,15 @@ function calculate() {
 		const v = (poolInv[ch] || 0) + (poolCurrent[ch] || 0) - (poolDeployed[ch] || 0);
 		if (v > 0) left[ch] = v;
 	}
+	const leftSig = mapSig(left);
+	if (mapSig(currentBoxLeft || {}) !== leftSig) {
+		currentBoxLeft = left;
+		invalidateDictionaryAvailability();
+		const modal = document.getElementById('dictionaryModal');
+		if (modal && modal.open) renderCurrentDictionaryView();
+	}
 	const leftEl = document.getElementById('leftTiles');
-	if (setSig(leftEl, mapSig(left))) {
+	if (setSig(leftEl, leftSig)) {
 		if (!fillTiles(leftEl, left, null))
 			leftEl.innerHTML = '<div class="empty">Box is empty after this change.</div>';
 	}

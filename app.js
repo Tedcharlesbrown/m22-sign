@@ -641,7 +641,10 @@ function ioCol(label, cls, signKey, field, val) {
 		scheduleCalculate();
 		scheduleSaveState();
 	});
-	ta.addEventListener('keydown', playTileSound);
+	ta.addEventListener('keydown', (e) => {
+		if (handleSelectionDelete(e, ta, preview, signKey, field)) return;
+		playTileSound(e);
+	});
 	ta.addEventListener('cut', (e) => {
 		handleCut(e, ta, preview, signKey, field);
 	});
@@ -702,6 +705,23 @@ function handleCut(e, ta, preview, signKey, field) {
 			scheduleSaveState(0);
 		}, 620);
 	}
+}
+function handleSelectionDelete(e, ta, preview, signKey, field) {
+	if (e.key !== 'Backspace' && e.key !== 'Delete') return false;
+	const start = ta.selectionStart || 0;
+	const end = ta.selectionEnd || 0;
+	if (start === end) return false;
+	e.preventDefault();
+	playTextChangeSound(ta.value.slice(start, end));
+	animateCutSelection(preview, ta.value, start, end);
+	setTimeout(() => {
+		ta.value = ta.value.slice(0, start) + ta.value.slice(end);
+		ta.setSelectionRange(start, start);
+		txt(signKey)[field] = ta.value;
+		scheduleCalculate(0);
+		scheduleSaveState(0);
+	}, 620);
+	return true;
 }
 function animateCutSelection(preview, text, start, end) {
 	for (const pos of previewPositionsForRange(text, start, end)) {

@@ -95,6 +95,7 @@ const STORE_KEY = 'signswap.v2';
 
 let state = { inv: {}, text: {}, preview: {}, highScore: 0 };
 let currentShortSet = new Set();
+const textCountCache = new Map();
 
 function loadState() {
 	try {
@@ -115,7 +116,7 @@ let calculateTimer = 0;
 let saveTimer = 0;
 function scheduleCalculate(delay) {
 	clearTimeout(calculateTimer);
-	calculateTimer = setTimeout(calculate, delay == null ? 90 : delay);
+	calculateTimer = setTimeout(calculate, delay == null ? 250 : delay);
 }
 function scheduleSaveState(delay) {
 	clearTimeout(saveTimer);
@@ -159,6 +160,7 @@ function tileCount(ch, n, short) {
 function fillTiles(el, map, shortInfo) {
 	el.innerHTML = '';
 	let any = false;
+	const frag = document.createDocumentFragment();
 	const missing = {};
 	const remainingShort = new Map();
 	if (shortInfo instanceof Map) {
@@ -174,7 +176,7 @@ function fillTiles(el, map, shortInfo) {
 				remainingShort.set(key, Math.max(0, (remainingShort.get(key) || 0) - missingCount));
 				const haveCount = Math.max(0, n - missingCount);
 				if (haveCount > 0) {
-					el.appendChild(tileCount(ch, haveCount, false));
+					frag.appendChild(tileCount(ch, haveCount, false));
 					any = true;
 				}
 				if (missingCount > 0) {
@@ -182,7 +184,7 @@ function fillTiles(el, map, shortInfo) {
 					any = true;
 				}
 			} else {
-				el.appendChild(tileCount(ch, n, shortInfo && shortInfo.has && shortInfo.has(ch)));
+				frag.appendChild(tileCount(ch, n, shortInfo && shortInfo.has && shortInfo.has(ch)));
 				any = true;
 			}
 		}
@@ -190,9 +192,10 @@ function fillTiles(el, map, shortInfo) {
 	for (const ch of CHARS) {
 		const n = missing[ch] || 0;
 		if (n > 0) {
-			el.appendChild(tileCount(ch, n, true));
+			frag.appendChild(tileCount(ch, n, true));
 		}
 	}
+	el.appendChild(frag);
 	return any;
 }
 function hasTiles(map) {
@@ -215,6 +218,14 @@ function poolCounts(map) {
 	const out = {};
 	for (const ch of CHARS) addPoolCount(out, ch, map[ch] || 0);
 	return out;
+}
+function mapSig(map) {
+	return CHARS.map((ch) => map[ch] || 0).join(',');
+}
+function setSig(el, sig) {
+	if (el.dataset.renderSig === sig) return false;
+	el.dataset.renderSig = sig;
+	return true;
 }
 function normalizeBonusBoard(raw) {
 	const valid = new Set(Object.keys(BONUS_LABELS));
@@ -507,6 +518,17 @@ function countText(text, counts, unknown) {
 		else if (ch.trim() !== '' && !SILENT_CHARS.has(ch)) unknown.add(ch);
 	}
 }
+function textCounts(id, text) {
+	const value = String(text || '');
+	const cached = textCountCache.get(id);
+	if (cached && cached.value === value) return cached;
+	const counts = {};
+	const unknown = new Set();
+	countText(value, counts, unknown);
+	const next = { value, counts, unknown };
+	textCountCache.set(id, next);
+	return next;
+}
 
 /* build header wordmark */
 function buildWordmark() {
@@ -607,9 +629,12 @@ function ioCol(label, cls, signKey, field, val) {
 	fillTilePreview(preview, ta.value, null, false, ensurePreviewMeta(signKey, field));
 	ta.addEventListener('focus', warmAudio);
 	ta.addEventListener('pointerdown', warmAudio);
-	ta.addEventListener('input', () => {
+	ta.addEventListener('input', (e) => {
 		txt(signKey)[field] = ta.value;
-		if (!preview.dataset.animateNext) preview.dataset.animateNext = '1';
+		if (!preview.dataset.animateNext && e.inputType === 'insertText') {
+			const ch = (e.data || '').toUpperCase();
+			if (CHARSET.has(ch)) preview.dataset.animateNext = '1';
+		}
 		const animate = preview.dataset.animateNext;
 		delete preview.dataset.animateNext;
 		renderInputPreview(preview, ta.value, signKey, field, animate);
@@ -816,10 +841,12 @@ function calculate() {
 
 	for (const sign of SIGNS) {
 		const t = txt(sign.key);
-		const now = {},
-			next = {};
-		countText(t.now, now, unknown);
-		countText(t.next, next, unknown);
+		const nowData = textCounts(previewKey(sign.key, 'now'), t.now);
+		const nextData = textCounts(previewKey(sign.key, 'next'), t.next);
+		const now = nowData.counts;
+		const next = nextData.counts;
+		for (const ch of nowData.unknown) unknown.add(ch);
+		for (const ch of nextData.unknown) unknown.add(ch);
 		const take = {},
 			put = {};
 		for (const ch of CHARS) {
@@ -919,51 +946,66 @@ function calculate() {
 	});
 
 	// Step 1 bring
-	if (!fillTiles(document.getElementById('bringTiles'), bring, shortInfo))
-		document.getElementById('bringTiles').innerHTML =
-			'<div class="empty">Nothing new to bring.</div>';
+	const bringEl = document.getElementById('bringTiles');
+	if (setSig(bringEl, mapSig(bring) + '|' + [...shortInfo].map(([k, v]) => `${k}:${v.need}`).join(','))) {
+		if (!fillTiles(bringEl, bring, shortInfo))
+			bringEl.innerHTML = '<div class="empty">Nothing new to bring.</div>';
+	}
 
 	// Step 2 swap
 	const swapEl = document.getElementById('swapTiles');
-	swapEl.innerHTML = '';
-	swapEl.className = 'swapgrid';
-	let hasSwap = false;
-	for (const s of perSign) {
-		if (!hasTiles(s.swap)) continue;
-		hasSwap = true;
-		const blk = document.createElement('div');
-		blk.className = 'swapblock';
-		const h = document.createElement('h3');
-		h.textContent = s.label;
-		blk.appendChild(h);
-		const row = document.createElement('div');
-		row.className = 'tiles';
-		fillTiles(row, s.swap, null);
-		blk.appendChild(row);
-		swapEl.appendChild(blk);
-	}
-	if (!hasSwap) {
-		swapEl.className = 'tiles';
-		swapEl.innerHTML = '<div class="empty">No cross-sign swaps.</div>';
+	const swapSig = perSign.map((s) => s.label + ':' + mapSig(s.swap)).join('|');
+	if (setSig(swapEl, swapSig)) {
+		swapEl.innerHTML = '';
+		swapEl.className = 'swapgrid';
+		let hasSwap = false;
+		const frag = document.createDocumentFragment();
+		for (const s of perSign) {
+			if (!hasTiles(s.swap)) continue;
+			hasSwap = true;
+			const blk = document.createElement('div');
+			blk.className = 'swapblock';
+			const h = document.createElement('h3');
+			h.textContent = s.label;
+			blk.appendChild(h);
+			const row = document.createElement('div');
+			row.className = 'tiles';
+			fillTiles(row, s.swap, null);
+			blk.appendChild(row);
+			frag.appendChild(blk);
+		}
+		if (hasSwap) {
+			swapEl.appendChild(frag);
+		} else {
+			swapEl.className = 'tiles';
+			swapEl.innerHTML = '<div class="empty">No cross-sign swaps.</div>';
+		}
 	}
 
 	// Step 3 per sign
 	const ps = document.getElementById('perSign');
-	ps.innerHTML = '';
-	for (const s of perSign) {
-		const blk = document.createElement('div');
-		blk.className = 'signblock';
-		const sheet = document.createElement('div');
-		sheet.className = 'signsheet';
-		const h = document.createElement('h3');
-		h.textContent = s.label;
-		sheet.appendChild(h);
-		sheet.appendChild(actionBox('take', tileRow('Take down', 'take', s.take)));
-		if (hasTiles(s.swap))
-			sheet.appendChild(actionBox('swapin', tileRow('Swap in', 'swapin', s.swap)));
-		sheet.appendChild(actionBox('put', tileRow('Put up', 'put', s.put)));
-		blk.appendChild(sheet);
-		ps.appendChild(blk);
+	const perSignSig = perSign
+		.map((s) => [s.label, mapSig(s.take), mapSig(s.swap), mapSig(s.put)].join(':'))
+		.join('|');
+	if (setSig(ps, perSignSig)) {
+		ps.innerHTML = '';
+		const frag = document.createDocumentFragment();
+		for (const s of perSign) {
+			const blk = document.createElement('div');
+			blk.className = 'signblock';
+			const sheet = document.createElement('div');
+			sheet.className = 'signsheet';
+			const h = document.createElement('h3');
+			h.textContent = s.label;
+			sheet.appendChild(h);
+			sheet.appendChild(actionBox('take', tileRow('Take down', 'take', s.take)));
+			if (hasTiles(s.swap))
+				sheet.appendChild(actionBox('swapin', tileRow('Swap in', 'swapin', s.swap)));
+			sheet.appendChild(actionBox('put', tileRow('Put up', 'put', s.put)));
+			blk.appendChild(sheet);
+			frag.appendChild(blk);
+		}
+		ps.appendChild(frag);
 	}
 
 	// leftover
@@ -973,41 +1015,14 @@ function calculate() {
 		const v = (poolInv[ch] || 0) + (poolCurrent[ch] || 0) - (poolDeployed[ch] || 0);
 		if (v > 0) left[ch] = v;
 	}
-	if (!fillTiles(document.getElementById('leftTiles'), left, null))
-		document.getElementById('leftTiles').innerHTML =
-			'<div class="empty">Box is empty after this change.</div>';
+	const leftEl = document.getElementById('leftTiles');
+	if (setSig(leftEl, mapSig(left))) {
+		if (!fillTiles(leftEl, left, null))
+			leftEl.innerHTML = '<div class="empty">Box is empty after this change.</div>';
+	}
 
 	// alert
-	const alertSlot = document.getElementById('alertSlot');
-	alertSlot.innerHTML = '';
-	if (shortages.length) {
-		const div = document.createElement('div');
-		div.className = 'alertbar';
-		const title = document.createElement('strong');
-		title.textContent = 'Not enough tiles.';
-		div.appendChild(title);
-		div.appendChild(
-			document.createTextNode(' The box does not hold enough tiles for this change.')
-		);
-		const list = document.createElement('div');
-		list.className = 'shortagelist';
-		for (const s of shortages) {
-			const row = document.createElement('div');
-			row.className = 'shortagerow';
-			for (const text of [s.ch, `need ${s.need}`, `have ${s.have}`]) {
-				const cell = document.createElement('span');
-				cell.textContent = text;
-				row.appendChild(cell);
-			}
-			list.appendChild(row);
-		}
-		div.appendChild(list);
-		const note = document.createElement('div');
-		note.className = 'shortagenote';
-		note.textContent = 'The red tiles are the ones you are short on.';
-		div.appendChild(note);
-		alertSlot.appendChild(div);
-	}
+	renderShortageAlert(shortages);
 
 	// unknown note
 	const noteSlot = document.getElementById('noteSlot');
@@ -1028,6 +1043,55 @@ function actionBox(cls, row) {
 	box.appendChild(row);
 	return box;
 }
+function renderShortageAlert(shortages) {
+	const alertSlot = document.getElementById('alertSlot');
+	if (!shortages.length) {
+		if (alertSlot.firstChild) alertSlot.replaceChildren();
+		return;
+	}
+	let div = alertSlot.querySelector('.alertbar');
+	let list;
+	if (!div) {
+		div = document.createElement('div');
+		div.className = 'alertbar';
+		const title = document.createElement('strong');
+		title.textContent = 'Not enough tiles.';
+		div.appendChild(title);
+		div.appendChild(
+			document.createTextNode(' The box does not hold enough tiles for this change.')
+		);
+		list = document.createElement('div');
+		list.className = 'shortagelist';
+		div.appendChild(list);
+		const note = document.createElement('div');
+		note.className = 'shortagenote';
+		note.textContent = 'The red tiles are the ones you are short on.';
+		div.appendChild(note);
+		alertSlot.replaceChildren(div);
+	} else {
+		list = div.querySelector('.shortagelist');
+	}
+	const rows = new Map();
+	for (const row of list.children) rows.set(row.dataset.shortageKey, row);
+	const seen = new Set();
+	for (const s of shortages) {
+		seen.add(s.ch);
+		let row = rows.get(s.ch);
+		if (!row) {
+			row = document.createElement('div');
+			row.className = 'shortagerow';
+			row.dataset.shortageKey = s.ch;
+			for (let i = 0; i < 3; i++) row.appendChild(document.createElement('span'));
+			list.appendChild(row);
+		}
+		row.children[0].textContent = s.ch;
+		row.children[1].textContent = `need ${s.need}`;
+		row.children[2].textContent = `have ${s.have}`;
+	}
+	for (const [key, row] of rows) {
+		if (!seen.has(key)) row.remove();
+	}
+}
 function tileRow(label, cls, map) {
 	const row = document.createElement('div');
 	row.className = 'tilerow';
@@ -1035,14 +1099,16 @@ function tileRow(label, cls, map) {
 	l.className = 'rowlab ' + cls;
 	l.textContent = label;
 	row.appendChild(l);
+	const frag = document.createDocumentFragment();
 	let any = false;
 	for (const ch of CHARS) {
 		const n = map[ch] || 0;
 		if (n > 0) {
-			row.appendChild(tileCount(ch, n, false));
+			frag.appendChild(tileCount(ch, n, false));
 			any = true;
 		}
 	}
+	row.appendChild(frag);
 	if (!any) {
 		const e = document.createElement('span');
 		e.className = 'empty';

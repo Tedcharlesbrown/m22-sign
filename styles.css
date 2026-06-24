@@ -42,7 +42,6 @@ body {
 		radial-gradient(circle at 20% 0%, rgba(255, 255, 255, 0.08), transparent 24rem),
 		radial-gradient(circle at 82% 12%, rgba(247, 239, 218, 0.08), transparent 20rem),
 		radial-gradient(120% 90% at 50% -10%, #16604a 0%, var(--felt) 45%, var(--felt-2) 100%);
-	background-attachment: fixed;
 	min-height: 100vh;
 	padding: 22px 16px 60px;
 	line-height: 1.45;
@@ -292,7 +291,6 @@ header {
 	position: relative;
 	display: inline-block;
 	margin: 4px;
-	animation: tileSettle 220ms ease-out both;
 }
 .tilebox:hover .tile {
 	transform: translateY(-2px) rotate(-1deg);
@@ -334,6 +332,7 @@ header {
 	background: var(--alert);
 }
 .card {
+	contain: layout paint style;
 	background: linear-gradient(180deg, #fff5df 0%, var(--cream) 100%);
 	border: 1px solid var(--cream-edge);
 	border-radius: 12px;
@@ -462,6 +461,8 @@ textarea {
 	position: relative;
 	display: flex;
 	flex-direction: column;
+	contain: layout paint style;
+	isolation: isolate;
 	gap: 4px;
 	margin-top: 8px;
 	min-height: 34px;
@@ -530,6 +531,7 @@ textarea {
 }
 .previewline {
 	display: flex;
+	contain: layout paint style;
 	gap: 3px;
 	min-height: 26px;
 	width: max-content;
@@ -692,6 +694,7 @@ button:focus-visible {
 	margin-bottom: 3px;
 }
 .panel {
+	contain: layout paint style;
 	border-radius: 12px;
 	padding: 16px;
 	border: 1px solid;
@@ -950,6 +953,7 @@ button:focus-visible {
 	animation: noticeIn 220ms ease-out both;
 }
 .leftbox {
+	contain: layout paint style;
 	margin-top: 6px;
 }
 .leftbox h2,

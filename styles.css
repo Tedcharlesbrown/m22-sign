@@ -66,7 +66,7 @@ body::before {
 .wrap {
 	position: relative;
 	z-index: 1;
-	max-width: 1120px;
+	max-width: 1240px;
 	margin: 0 auto;
 	padding: 18px;
 	border-radius: 18px;
@@ -420,23 +420,22 @@ textarea {
 	flex-direction: column;
 	gap: 4px;
 	margin-top: 8px;
-	min-height: 28px;
+	min-height: 34px;
 	padding: 6px;
 	border: 1px solid var(--cream-edge);
 	border-radius: 8px;
 	background: #fffdf6;
-}
-.tilepreview:empty::before {
-	content: 'No tiles yet';
-	font-size: 12px;
-	color: #8a7d66;
-	font-style: italic;
 }
 .previewline {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 3px;
 	min-height: 24px;
+}
+.previewword {
+	display: inline-flex;
+	gap: 3px;
+	flex: 0 0 auto;
 }
 .previewspace {
 	width: 14px;
@@ -462,6 +461,15 @@ textarea {
 	right: 2px;
 	bottom: 1px;
 	font-size: 6px;
+}
+.previewscore {
+	margin-top: 2px;
+	padding-top: 4px;
+	border-top: 1px solid #e7d8bc;
+	font-size: 12px;
+	font-weight: 700;
+	color: #7b6a52;
+	text-align: right;
 }
 textarea:focus,
 input:focus,

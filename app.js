@@ -150,7 +150,7 @@ function poolCounts(map) {
 }
 function fillTilePreview(el, text, shortSet, animate) {
 	el.innerHTML = '';
-	if (!String(text || '').trim()) return;
+	let score = 0;
 	let lastTile = null;
 	const lines = String(text || '')
 		.toUpperCase()
@@ -158,16 +158,30 @@ function fillTilePreview(el, text, shortSet, animate) {
 	for (const line of lines) {
 		const row = document.createElement('div');
 		row.className = 'previewline';
-		for (const ch of line) {
-			if (ch === ' ') {
-				row.appendChild(document.createElement('span')).className = 'previewspace';
+		const parts = line.split(/(\s+)/);
+		for (const part of parts) {
+			if (!part) continue;
+			if (/^\s+$/.test(part)) {
+				for (let i = 0; i < part.length; i++) {
+					row.appendChild(document.createElement('span')).className = 'previewspace';
+				}
 				continue;
 			}
-			if (CHARSET.has(ch))
-				lastTile = row.appendChild(tileEl(ch, shortSet && shortSet.has(ch) ? 'short' : ''));
+			const word = document.createElement('span');
+			word.className = 'previewword';
+			for (const ch of part) {
+				if (!CHARSET.has(ch)) continue;
+				score += VALUES[ch] || 0;
+				lastTile = word.appendChild(tileEl(ch, shortSet && shortSet.has(ch) ? 'short' : ''));
+			}
+			if (word.childNodes.length) row.appendChild(word);
 		}
 		el.appendChild(row);
 	}
+	const foot = document.createElement('div');
+	foot.className = 'previewscore';
+	foot.textContent = 'Total score: ' + score;
+	el.appendChild(foot);
 	if (animate && lastTile) lastTile.classList.add('slam');
 }
 
@@ -298,9 +312,8 @@ function warmAudio() {
 	} catch (e) {}
 }
 function playTileSound(key) {
-	if (key === ' ' || key === 'Spacebar') key = 'Space';
-	const isTileKey = key && key.length === 1 && CHARSET.has(key.toUpperCase());
-	const isEditKey = ['Backspace', 'Delete', 'Enter'].includes(key);
+	const isTileKey = typeof key === 'string' && /^[a-z0-9]$/i.test(key);
+	const isEditKey = key === 'Backspace' || key === 'Delete';
 	if (!isTileKey && !isEditKey) return;
 	try {
 		audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();

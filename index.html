@@ -83,6 +83,24 @@
 				</details>
 			</section>
 		</div>
+		<dialog class="dict-modal" id="dictionaryModal">
+			<div class="dict-head">
+				<div>
+					<div class="eyebrow">Dictionary</div>
+					<h2>Possible words</h2>
+				</div>
+				<button type="button" class="ghost" id="dictionaryCloseBtn">Close</button>
+			</div>
+			<input
+				type="search"
+				id="dictionarySearch"
+				placeholder="Search possible words"
+				autocomplete="off"
+				spellcheck="false"
+			/>
+			<div class="dict-status" id="dictionaryStatus">Loading dictionary...</div>
+			<div class="dict-results" id="dictionaryResults"></div>
+		</dialog>
 		<footer class="felt-footer">
 			<span>Love, Ted</span>
 			<button type="button" class="preview-random" id="randomizeBonusesBtn">randomize</button>

@@ -11,6 +11,103 @@ const PREVIEW_COLS = 17;
 const PREVIEW_CELLS = PREVIEW_ROWS * PREVIEW_COLS;
 const BONUS_COUNTS = { dl: 5, tl: 2, dw: 3, tw: 1 };
 const BONUS_LABELS = { dl: 'DL', tl: 'TL', dw: 'DW', tw: 'TW' };
+// Common-words list (frequency-ordered, ~10k words). Small and fast, and keeps
+// results to everyday words instead of the obscure/medical terms in a full dictionary.
+const DICTIONARY_URL =
+	'https://cdn.jsdelivr.net/gh/first20hours/google-10000-english@master/google-10000-english-no-swears.txt';
+// Thesaurus lookup: "means like" related words. Free, no key, CORS-enabled.
+const DATAMUSE_URL = 'https://api.datamuse.com/words';
+// Common words skipped when learning the personal frequently-used list. This is a
+// small offline fallback; the fuller stopwords-iso list loads from stopwords.json
+// at startup (see loadStopWords) and is merged into this same set.
+const STOP_WORDS = new Set(
+	(
+		'a about above after again against all am an and any are as at be because been before being ' +
+		'below between both but by can did do does doing down during each few for from further had has ' +
+		'have having he her here hers herself him himself his how if in into is it its itself just me ' +
+		'more most my myself no nor not now of off on once only or other our ours ourselves out over own ' +
+		'same she should so some such than that the their theirs them themselves then there these they ' +
+		'this those through to too under until up very was we were what when where which while who whom ' +
+		'why will with you your yours yourself yourselves'
+	)
+		.toUpperCase()
+		.split(' ')
+);
+const STOP_WORDS_URL = 'stopwords.json';
+async function loadStopWords() {
+	try {
+		const res = await fetch(STOP_WORDS_URL, { cache: 'force-cache' });
+		if (!res.ok) throw new Error('stopwords.json request failed');
+		const list = await res.json();
+		if (Array.isArray(list)) {
+			for (const entry of list) {
+				const word = String(entry || '').trim().toUpperCase();
+				if (/^[A-Z]{2,}$/.test(word)) STOP_WORDS.add(word);
+			}
+		}
+	} catch (e) {
+		// Keep the built-in fallback set; learning still works without the fuller list.
+		console.warn('Could not load stopwords.json; using built-in stop words.', e);
+	}
+}
+// Premade "Your words" seeds, loaded from custom.json. These always appear in the
+// dictionary's "Your words" group (when buildable); learned words rank above them.
+const CUSTOM_WORDS_URL = 'custom.json';
+let customWords = [];
+let customWordsPromise = null;
+function loadCustomWords() {
+	if (customWordsPromise) return customWordsPromise;
+	customWordsPromise = fetch(CUSTOM_WORDS_URL, { cache: 'no-cache' })
+		.then((res) => {
+			if (!res.ok) throw new Error('custom.json request failed');
+			return res.json();
+		})
+		.then((list) => {
+			const seen = new Set();
+			customWords = (Array.isArray(list) ? list : [])
+				.map((entry) => String(entry || '').trim().toUpperCase())
+				.filter((word) => /^[A-Z]{2,17}$/.test(word) && !seen.has(word) && seen.add(word));
+			return customWords;
+		})
+		.catch((e) => {
+			console.warn('Could not load custom.json; no premade words.', e);
+			return customWords;
+		});
+	return customWordsPromise;
+}
+const FALLBACK_WORDS = [
+	'ADVENTURE',
+	'ARROW',
+	'BEACH',
+	'BEACON',
+	'BIRCH',
+	'BREEZE',
+	'BRIGHT',
+	'CAMP',
+	'COAST',
+	'COURAGE',
+	'DREAM',
+	'DUNE',
+	'FRESH',
+	'GLOW',
+	'GUIDE',
+	'HARBOR',
+	'HOPE',
+	'LAKE',
+	'LIGHT',
+	'MILES',
+	'NORTH',
+	'PATH',
+	'PEACE',
+	'ROAD',
+	'SHORE',
+	'SIGN',
+	'SOUTH',
+	'SPARK',
+	'TRAIL',
+	'WAVE',
+	'WISDOM',
+];
 const TILE_EQUIV = { 9: '6', '-': 'I', '/': 'I' };
 const TILE_POOL_LABEL = { 6: '6/9', I: 'I or /' };
 const VALUES = {
@@ -93,9 +190,14 @@ async function loadDefaultInv() {
 
 const STORE_KEY = 'signswap.v2';
 
-let state = { inv: {}, text: {}, preview: {}, highScore: 0 };
+let state = { inv: {}, text: {}, preview: {}, highScore: 0, wordUses: {} };
+let lastWordCaptureSig = '';
 let currentShortSet = new Set();
 const textCountCache = new Map();
+let dictionaryWords = null;
+let dictionaryPromise = null;
+const relatedCache = new Map(); // query -> related words (uppercase), from the thesaurus
+let relatedTimer = 0;
 
 function loadState() {
 	try {
@@ -236,10 +338,326 @@ function normalizeBonusBoard(raw) {
 function makeSeed() {
 	return Math.floor(Math.random() * 0x100000000) >>> 0;
 }
+function hashSeed(text) {
+	let h = 2166136261;
+	for (let i = 0; i < text.length; i++) {
+		h ^= text.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return h >>> 0;
+}
+function dailyBonusSeed(signKey, field, dateKey) {
+	return hashSeed('signswap:' + dateKey + ':' + signKey + ':' + field);
+}
 function localDateKey(d) {
 	const date = d || new Date();
 	const pad = (n) => String(n).padStart(2, '0');
 	return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
+}
+function wordScore(word) {
+	let score = 0;
+	for (const ch of word) score += VALUES[ch] || 0;
+	return score;
+}
+function canBuildWord(word, availablePools) {
+	const remaining = Object.assign({}, availablePools);
+	for (const ch of word) {
+		if (!/[A-Z]/.test(ch)) return false;
+		const key = tileKey(ch);
+		if ((remaining[key] || 0) <= 0) return false;
+		remaining[key]--;
+	}
+	return true;
+}
+function fuzzyMatch(query, word) {
+	// True when every query letter appears in order within the word (subsequence),
+	// so partials and small typos still match (e.g. "hpe" -> "HOPE").
+	let i = 0;
+	for (let j = 0; j < word.length && i < query.length; j++) {
+		if (word[j] === query[i]) i++;
+	}
+	return i === query.length;
+}
+function possibleWords(query) {
+	const q = String(query || '').trim().toUpperCase();
+	const available = poolCounts(inv());
+	const words = dictionaryWords || FALLBACK_WORDS;
+	// Words are already frequency-ordered (most common first); keep that order.
+	const buildable = words.filter(
+		(word) =>
+			word.length > 1 && word.length <= PREVIEW_COLS && canBuildWord(word, available)
+	);
+	if (!q) return buildable.slice(0, 120);
+	// Exact substring matches first, then looser fuzzy matches — each common-first.
+	const substr = [];
+	const fuzzy = [];
+	for (const word of buildable) {
+		if (word.includes(q)) substr.push(word);
+		else if (fuzzyMatch(q, word)) fuzzy.push(word);
+	}
+	return substr.concat(fuzzy).slice(0, 120);
+}
+function extractWords(text) {
+	const out = [];
+	for (const match of String(text || '').toUpperCase().matchAll(/[A-Z]{2,}/g)) {
+		const word = match[0];
+		if (word.length <= PREVIEW_COLS && !STOP_WORDS.has(word)) out.push(word);
+	}
+	return out;
+}
+function currentSignTexts() {
+	const texts = [];
+	for (const sign of SIGNS) {
+		const t = txt(sign.key);
+		texts.push(t.now, t.next);
+	}
+	return texts;
+}
+function recordUsedWords(texts) {
+	if (!state.wordUses || typeof state.wordUses !== 'object') state.wordUses = {};
+	const seen = new Set();
+	for (const text of texts) for (const word of extractWords(text)) seen.add(word);
+	if (!seen.size) return;
+	// Skip an identical back-to-back capture (e.g. Save then Next Sign with no edits).
+	const sig = [...seen].sort().join(' ');
+	if (sig === lastWordCaptureSig) return;
+	lastWordCaptureSig = sig;
+	for (const word of seen) state.wordUses[word] = (state.wordUses[word] || 0) + 1;
+}
+function wordTileShortage(word, available) {
+	// Per-letter flags: true where the box can't supply that tile (rendered red).
+	const remaining = Object.assign({}, available);
+	const flags = [];
+	for (const ch of word) {
+		const key = tileKey(ch);
+		if ((remaining[key] || 0) > 0) {
+			remaining[key]--;
+			flags.push(false);
+		} else {
+			flags.push(true);
+		}
+	}
+	return flags;
+}
+function matchedUsedWords(query, available) {
+	const uses = state.wordUses || {};
+	const q = String(query || '').trim().toUpperCase();
+	// Premade seeds from custom.json plus the learned list, deduped.
+	const candidates = new Set([...customWords, ...Object.keys(uses)]);
+	const words = [...candidates].filter(
+		(word) =>
+			word.length > 1 &&
+			word.length <= PREVIEW_COLS &&
+			(!q || word.includes(q) || fuzzyMatch(q, word))
+	);
+	// "Your words" always show, even when the box is short — so don't filter by
+	// buildability here; short letters get marked red at render time.
+	const buildable = new Map();
+	for (const word of words) buildable.set(word, !wordTileShortage(word, available).some(Boolean));
+	words.sort((a, b) => {
+		// Learned counts win over custom seeds (which sit at 0).
+		const ua = uses[a] || 0,
+			ub = uses[b] || 0;
+		if (ub !== ua) return ub - ua;
+		// Then words she can build now, then alphabetical.
+		if (buildable.get(a) !== buildable.get(b)) return buildable.get(a) ? -1 : 1;
+		return a.localeCompare(b);
+	});
+	// Keep it short unless she's actively searching.
+	return words.slice(0, q ? 40 : 10);
+}
+async function loadDictionaryWords() {
+	if (dictionaryWords) return dictionaryWords;
+	if (!dictionaryPromise) {
+		dictionaryPromise = fetch(DICTIONARY_URL)
+			.then((res) => {
+				if (!res.ok) throw new Error('Dictionary request failed');
+				return res.text();
+			})
+			.then((text) => {
+				const seen = new Set();
+				dictionaryWords = text
+					.split(/\r?\n/)
+					.map((word) => word.trim().toUpperCase())
+					.filter((word) => /^[A-Z]{2,17}$/.test(word))
+					.filter((word) => {
+						if (seen.has(word)) return false;
+						seen.add(word);
+						return true;
+					});
+				return dictionaryWords;
+			})
+			.catch(() => {
+				dictionaryWords = FALLBACK_WORDS;
+				return dictionaryWords;
+			});
+	}
+	return dictionaryPromise;
+}
+function dictWordRow(word, shortFlags) {
+	const row = document.createElement('div');
+	row.className = 'dict-word';
+	const tiles = document.createElement('div');
+	tiles.className = 'dict-tiles';
+	let i = 0;
+	for (const ch of word) {
+		const short = shortFlags && shortFlags[i];
+		tiles.appendChild(tileEl(ch, 'scrabble dict-tile' + (short ? ' short' : '')));
+		i++;
+	}
+	row.appendChild(tiles);
+	const actions = document.createElement('div');
+	actions.className = 'dict-rowactions';
+	const score = document.createElement('span');
+	score.className = 'dict-score';
+	score.textContent = wordScore(word) + ' pts';
+	actions.appendChild(score);
+	const copy = document.createElement('button');
+	copy.type = 'button';
+	copy.className = 'ghost save-action dict-copy';
+	copy.textContent = 'Copy';
+	copy.setAttribute('aria-label', 'Copy ' + word);
+	actions.appendChild(copy);
+	row.appendChild(actions);
+	row.title = 'Copy "' + word + '"';
+	row.addEventListener('click', () => copyWord(word, copy));
+	return row;
+}
+function copyWord(word, btn) {
+	const flash = () => {
+		if (!btn) return;
+		btn.textContent = 'Copied!';
+		btn.classList.add('copied');
+		clearTimeout(btn._resetTimer);
+		btn._resetTimer = setTimeout(() => {
+			btn.textContent = 'Copy';
+			btn.classList.remove('copied');
+		}, 1100);
+	};
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(word).then(flash).catch(() => fallbackCopy(word, flash));
+	} else {
+		fallbackCopy(word, flash);
+	}
+}
+function fallbackCopy(text, done) {
+	try {
+		const ta = document.createElement('textarea');
+		ta.value = text;
+		ta.style.position = 'fixed';
+		ta.style.opacity = '0';
+		document.body.appendChild(ta);
+		ta.select();
+		document.execCommand('copy');
+		ta.remove();
+		if (done) done();
+	} catch (e) {}
+}
+function dictGroupLabel(text) {
+	const label = document.createElement('div');
+	label.className = 'dict-group';
+	label.textContent = text;
+	return label;
+}
+function renderDictionaryWords() {
+	const results = document.getElementById('dictionaryResults');
+	const status = document.getElementById('dictionaryStatus');
+	const search = document.getElementById('dictionarySearch');
+	if (!results || !status || !search) return;
+	const query = search.value;
+	const available = poolCounts(inv());
+	const yours = matchedUsedWords(query, available);
+	const yoursSet = new Set(yours);
+	const more = possibleWords(query).filter((word) => !yoursSet.has(word));
+	results.innerHTML = '';
+	const frag = document.createDocumentFragment();
+	if (yours.length) {
+		frag.appendChild(dictGroupLabel('Your words'));
+		for (const word of yours)
+			frag.appendChild(dictWordRow(word, wordTileShortage(word, available)));
+		if (more.length) frag.appendChild(dictGroupLabel('More words'));
+	}
+	for (const word of more) frag.appendChild(dictWordRow(word));
+	results.appendChild(frag);
+	const total = yours.length + more.length;
+	status.textContent = total
+		? `${total} possible word${total === 1 ? '' : 's'} shown.`
+		: 'No possible words found for this search.';
+	scheduleRelatedWords(query, new Set([...yours, ...more]));
+}
+async function fetchRelatedWords(query) {
+	const q = String(query || '').trim().toLowerCase();
+	if (!q) return [];
+	if (relatedCache.has(q)) return relatedCache.get(q);
+	try {
+		const res = await fetch(`${DATAMUSE_URL}?ml=${encodeURIComponent(q)}&max=200`);
+		if (!res.ok) throw new Error('Thesaurus request failed');
+		const data = await res.json();
+		const seen = new Set();
+		const words = (Array.isArray(data) ? data : [])
+			.map((entry) => String(entry && entry.word ? entry.word : '').toUpperCase())
+			.filter((word) => /^[A-Z]{2,17}$/.test(word) && !seen.has(word) && seen.add(word));
+		relatedCache.set(q, words);
+		return words;
+	} catch (e) {
+		return [];
+	}
+}
+function scheduleRelatedWords(query, shown) {
+	clearTimeout(relatedTimer);
+	if (String(query || '').trim().length < 2) return;
+	relatedTimer = setTimeout(() => renderRelatedWords(query, shown), 220);
+}
+async function renderRelatedWords(query, shown) {
+	const results = document.getElementById('dictionaryResults');
+	const status = document.getElementById('dictionaryStatus');
+	const search = document.getElementById('dictionarySearch');
+	if (!results || !search) return;
+	const related = await fetchRelatedWords(query);
+	// Ignore stale responses if the search box changed while we waited.
+	if (search.value !== query) return;
+	const available = poolCounts(inv());
+	const buildable = related
+		.filter(
+			(word) =>
+				word.length > 1 &&
+				word.length <= PREVIEW_COLS &&
+				!shown.has(word) &&
+				canBuildWord(word, available)
+		)
+		.slice(0, 60);
+	if (!buildable.length) return;
+	const frag = document.createDocumentFragment();
+	const label = document.createElement('div');
+	label.className = 'dict-group';
+	label.textContent = 'Related words';
+	frag.appendChild(label);
+	for (const word of buildable) frag.appendChild(dictWordRow(word));
+	results.appendChild(frag);
+	if (status) status.textContent += ` Plus ${buildable.length} related.`;
+}
+async function openDictionaryModal() {
+	const modal = document.getElementById('dictionaryModal');
+	const search = document.getElementById('dictionarySearch');
+	const status = document.getElementById('dictionaryStatus');
+	if (!modal || !search || !status) return;
+	status.textContent = 'Loading dictionary...';
+	if (!modal.open) modal.showModal();
+	search.focus();
+	await Promise.all([loadDictionaryWords(), loadCustomWords()]);
+	renderDictionaryWords();
+}
+function bindDictionaryModal() {
+	const close = document.getElementById('dictionaryCloseBtn');
+	const search = document.getElementById('dictionarySearch');
+	const modal = document.getElementById('dictionaryModal');
+	if (close) close.addEventListener('click', () => modal && modal.close());
+	if (search) search.addEventListener('input', renderDictionaryWords);
+	if (modal) {
+		modal.addEventListener('click', (e) => {
+			if (e.target === modal) modal.close();
+		});
+	}
 }
 function seededRandom(seed) {
 	let n = seed >>> 0;
@@ -295,20 +713,23 @@ function randomBonusBoard(seed) {
 function previewKey(signKey, field) {
 	return signKey + ':' + field;
 }
-function normalizePreviewMeta(raw) {
-	const seed = Number.isInteger(raw && raw.bonusSeed) ? raw.bonusSeed >>> 0 : makeSeed();
+function normalizePreviewMeta(raw, signKey, field) {
+	const dateKey = typeof (raw && raw.dateKey) === 'string' ? raw.dateKey : localDateKey();
+	const seed = Number.isInteger(raw && raw.bonusSeed)
+		? raw.bonusSeed >>> 0
+		: dailyBonusSeed(signKey, field, dateKey);
 	const bonuses = normalizeBonusBoard(raw && raw.bonuses);
 	return {
 		bonusSeed: seed,
 		bonuses: bonuses.some(Boolean) ? bonuses : randomBonusBoard(seed),
 		score: Math.max(0, parseInt(raw && raw.score, 10) || 0),
-		dateKey: typeof (raw && raw.dateKey) === 'string' ? raw.dateKey : localDateKey(),
+		dateKey,
 	};
 }
 function ensurePreviewMeta(signKey, field) {
 	if (!state.preview || typeof state.preview !== 'object') state.preview = {};
 	const key = previewKey(signKey, field);
-	state.preview[key] = normalizePreviewMeta(state.preview[key]);
+	state.preview[key] = normalizePreviewMeta(state.preview[key], signKey, field);
 	return state.preview[key];
 }
 function updateHighScoreBadge(isNew) {
@@ -333,6 +754,14 @@ function clearHighScore() {
 	updateHighScoreBadge(false);
 	saveState();
 }
+function commitCurrentHighScore() {
+	if (!state.preview || typeof state.preview !== 'object') return false;
+	let changed = false;
+	for (const key of Object.keys(state.preview)) {
+		changed = commitHighScore(state.preview[key] && state.preview[key].score) || changed;
+	}
+	return changed;
+}
 function randomizePreviewBonuses() {
 	for (const sign of SIGNS) {
 		for (const field of ['now', 'next']) {
@@ -351,7 +780,7 @@ function rotateNextPreviewBonusesIfNeeded() {
 	for (const sign of SIGNS) {
 		const meta = ensurePreviewMeta(sign.key, 'next');
 		if (meta.dateKey === today) continue;
-		meta.bonusSeed = makeSeed();
+		meta.bonusSeed = dailyBonusSeed(sign.key, 'next', today);
 		meta.bonuses = randomBonusBoard(meta.bonusSeed);
 		meta.score = 0;
 		meta.dateKey = today;
@@ -368,6 +797,14 @@ function scheduleNextBonusRotation() {
 		calculate();
 		scheduleNextBonusRotation();
 	}, Math.max(1000, next.getTime() - now.getTime()));
+}
+function countTileChars(str) {
+	// Number of characters that become tiles, matching how the preview places them.
+	let n = 0;
+	for (const ch of String(str || '').toUpperCase()) {
+		if (CHARSET.has(ch)) n++;
+	}
+	return n;
 }
 function fillTilePreview(el, text, shortSet, animate, meta) {
 	el.innerHTML = '';
@@ -472,8 +909,13 @@ function fillTilePreview(el, text, shortSet, animate, meta) {
 		const delayStep = animate === 'paste' ? 32 : 12;
 		const maxDelay = animate === 'paste' ? 520 : 180;
 		const duration = animate === 'paste' ? '280ms' : '';
-		placedTiles.forEach(({ tile, col }) => {
-			tile.style.animationDelay = Math.min(col * delayStep, maxDelay) + 'ms';
+		// On paste, only the pasted run of tiles should animate (not the whole sign).
+		const range = animate === 'paste' ? el._pasteRange : null;
+		if (el._pasteRange) delete el._pasteRange;
+		placedTiles.forEach(({ tile, col }, idx) => {
+			if (range && (idx < range.start || idx >= range.start + range.len)) return;
+			const seq = range ? idx - range.start : col;
+			tile.style.animationDelay = Math.min(seq * delayStep, maxDelay) + 'ms';
 			if (duration) tile.style.animationDuration = duration;
 			tile.classList.add('slam');
 		});
@@ -550,6 +992,11 @@ function buildEntry() {
 	title.textContent = 'Signs';
 	const actions = document.createElement('div');
 	actions.className = 'entry-actions';
+	const dictionary = document.createElement('button');
+	dictionary.type = 'button';
+	dictionary.className = 'ghost';
+	dictionary.id = 'dictionaryBtn';
+	dictionary.textContent = 'Dictionary';
 	const promote = document.createElement('button');
 	promote.type = 'button';
 	promote.className = 'ghost';
@@ -575,6 +1022,7 @@ function buildEntry() {
 	loadInput.id = 'loadInput';
 	loadInput.accept = '.json,application/json';
 	loadInput.hidden = true;
+	actions.appendChild(dictionary);
 	actions.appendChild(print);
 	actions.appendChild(load);
 	actions.appendChild(save);
@@ -653,6 +1101,13 @@ function ioCol(label, cls, signKey, field, val) {
 		handleCut(e, ta, preview, signKey, field);
 	});
 	ta.addEventListener('paste', (e) => {
+		const start = ta.selectionStart || 0;
+		const pasted = e.clipboardData ? e.clipboardData.getData('text') : '';
+		// Tiles before the cursor are unchanged; the pasted text's tiles start there.
+		preview._pasteRange = {
+			start: countTileChars(ta.value.slice(0, start)),
+			len: countTileChars(pasted),
+		};
 		preview.dataset.animateNext = 'paste';
 		playPasteSound(e);
 	});
@@ -1256,6 +1711,7 @@ function importCSV(file) {
 }
 
 function bindEntryActions() {
+	document.getElementById('dictionaryBtn').addEventListener('click', openDictionaryModal);
 	document.getElementById('printBtn').addEventListener('click', () => {
 		printSign();
 	});
@@ -1270,6 +1726,7 @@ function bindEntryActions() {
 	bindEntryDrop();
 	document.getElementById('promoteBtn').addEventListener('click', () => {
 		if (!confirm('Confirm, this will remove the current sign.')) return;
+		recordUsedWords(currentSignTexts());
 		for (const sign of SIGNS) {
 			const t = txt(sign.key);
 			const nextMeta = ensurePreviewMeta(sign.key, 'next');
@@ -1279,9 +1736,8 @@ function bindEntryActions() {
 			if (!state.preview || typeof state.preview !== 'object') state.preview = {};
 			const nowKey = previewKey(sign.key, 'now');
 			const nextKey = previewKey(sign.key, 'next');
-			state.preview[nowKey] = normalizePreviewMeta(nextMeta);
-			state.preview[nextKey] = normalizePreviewMeta(null);
-			state.preview[nextKey].dateKey = localDateKey();
+			state.preview[nowKey] = normalizePreviewMeta(nextMeta, sign.key, 'now');
+			state.preview[nextKey] = normalizePreviewMeta(null, sign.key, 'next');
 		}
 		buildEntry();
 		bindEntryActions();
@@ -1333,6 +1789,8 @@ function bindEntryDrop() {
 	});
 }
 async function saveStateFile() {
+	commitCurrentHighScore();
+	recordUsedWords(currentSignTexts());
 	saveState();
 	const stamp = fileTimestamp(new Date());
 	const filename = 'sign_swap_' + stamp + '.json';
@@ -1398,8 +1856,14 @@ function loadStateFile(file) {
 function normalizeLoadedState(data) {
 	const raw = data && data.state ? data.state : data;
 	if (!raw || typeof raw !== 'object') throw new Error('Invalid state');
-	const next = { inv: {}, text: {}, preview: {}, highScore: 0 };
+	const next = { inv: {}, text: {}, preview: {}, highScore: 0, wordUses: {} };
 	next.highScore = Math.max(0, parseInt(raw.highScore, 10) || 0);
+	const rawUses = raw.wordUses && typeof raw.wordUses === 'object' ? raw.wordUses : {};
+	for (const key in rawUses) {
+		const word = String(key).toUpperCase();
+		const n = parseInt(rawUses[key], 10);
+		if (/^[A-Z]{2,17}$/.test(word) && n > 0) next.wordUses[word] = n;
+	}
 	const rawInv = raw.inv && typeof raw.inv === 'object' ? raw.inv : {};
 	for (const ch of CHARS) {
 		const n = parseInt(rawInv[ch], 10);
@@ -1416,7 +1880,7 @@ function normalizeLoadedState(data) {
 		next.text[sign.key] = { now: String(t.now || ''), next: String(t.next || '') };
 		for (const field of ['now', 'next']) {
 			const key = previewKey(sign.key, field);
-			next.preview[key] = normalizePreviewMeta(rawPreview[key] || legacyMeta);
+			next.preview[key] = normalizePreviewMeta(rawPreview[key] || legacyMeta, sign.key, field);
 		}
 	}
 	return next;
@@ -1490,6 +1954,8 @@ async function loadTaglineQuote() {
 /* init */
 async function init() {
 	await loadDefaultInv();
+	loadStopWords(); // background; word-learning happens later on user actions
+	loadCustomWords(); // background; premade "Your words" seeds
 	const saved = loadState();
 	if (saved) {
 		state = normalizeLoadedState(saved);
@@ -1503,6 +1969,7 @@ async function init() {
 	calculate();
 
 	bindEntryActions();
+	bindDictionaryModal();
 	document.getElementById('exportBtn').addEventListener('click', exportCSV);
 	document.getElementById('importInput').addEventListener('change', (e) => {
 		if (e.target.files[0]) importCSV(e.target.files[0]);
@@ -1523,6 +1990,14 @@ async function init() {
 	window.addEventListener('afterprint', clearPrintScaling);
 	scheduleNextBonusRotation();
 	document.body.classList.remove('app-loading');
+
+	// Warm the dictionary quietly after load so it is ready the moment she opens it.
+	const prefetchDictionary = () => loadDictionaryWords().catch(() => {});
+	if (window.requestIdleCallback) {
+		requestIdleCallback(prefetchDictionary, { timeout: 4000 });
+	} else {
+		setTimeout(prefetchDictionary, 1200);
+	}
 }
 init().catch((e) => {
 	console.error(e);

@@ -11,12 +11,13 @@ const PREVIEW_COLS = 17;
 const PREVIEW_CELLS = PREVIEW_ROWS * PREVIEW_COLS;
 const BONUS_COUNTS = { dl: 5, tl: 2, dw: 3, tw: 1 };
 const BONUS_LABELS = { dl: 'DL', tl: 'TL', dw: 'DW', tw: 'TW' };
-// Common-words list (frequency-ordered, ~10k words). Small and fast, and keeps
-// results to everyday words instead of the obscure/medical terms in a full dictionary.
-const DICTIONARY_URL =
-	'https://cdn.jsdelivr.net/gh/first20hours/google-10000-english@master/google-10000-english-no-swears.txt';
+// Static GitHub Pages-friendly common-word list. Exact words this list misses
+// are checked with dictionaryapi.dev as a last resort.
+const DICTIONARY_URL = 'words.txt';
 // Thesaurus lookup: "means like" related words. Free, no key, CORS-enabled.
 const DATAMUSE_URL = 'https://api.datamuse.com/words';
+// Last-resort exact-word lookup for words missing from the static list.
+const DICTIONARY_API_URL = 'https://api.dictionaryapi.dev/api/v2/entries/en';
 // Common words skipped when learning the personal frequently-used list. This is a
 // small offline fallback; the fuller stopwords-iso list loads from stopwords.json
 // at startup (see loadStopWords) and is merged into this same set.
@@ -193,10 +194,15 @@ const STORE_KEY = 'signswap.v2';
 let state = { inv: {}, text: {}, preview: {}, highScore: 0, wordUses: {}, hiddenWords: {} };
 let currentShortSet = new Set();
 const textCountCache = new Map();
+const buildableWordCache = new Map();
 let dictionaryWords = null;
 let dictionaryPromise = null;
 const relatedCache = new Map(); // query -> related words (uppercase), from the thesaurus
+const dictionaryApiCache = new Map(); // word -> true/false, exact dictionaryapi.dev result
 let relatedTimer = 0;
+let dictionaryApiTimer = 0;
+let dictionarySearchTimer = 0;
+let dictionarySearchToken = 0;
 let dictionaryView = 'possible';
 
 function loadState() {
@@ -213,6 +219,9 @@ function saveState() {
 	try {
 		localStorage.setItem(STORE_KEY, JSON.stringify(state));
 	} catch (e) {}
+}
+function invalidateDictionaryAvailability() {
+	buildableWordCache.clear();
 }
 let calculateTimer = 0;
 let saveTimer = 0;
@@ -378,22 +387,56 @@ function fuzzyMatch(query, word) {
 	}
 	return i === query.length;
 }
+function makeDictionaryIndex(words) {
+	const byFirst = {};
+	for (const letter of LETTERS) byFirst[letter] = [];
+	for (const word of words) {
+		const first = word[0];
+		if (byFirst[first]) byFirst[first].push(word);
+	}
+	return { byFirst };
+}
+function inventorySignature() {
+	const I = inv();
+	return CHARS.map((ch) => `${ch}:${I[ch] || 0}`).join('|');
+}
+function getBuildableWordData() {
+	const words = dictionaryWords || FALLBACK_WORDS;
+	const sig = inventorySignature() + ':' + words.length;
+	if (buildableWordCache.has(sig)) return buildableWordCache.get(sig);
+	const available = poolCounts(inv());
+	const buildable = [];
+	for (const word of words) {
+		if (word.length > 1 && word.length <= PREVIEW_COLS && canBuildWord(word, available)) buildable.push(word);
+	}
+	const data = { words: buildable, index: makeDictionaryIndex(buildable) };
+	buildableWordCache.clear();
+	buildableWordCache.set(sig, data);
+	return data;
+}
 function possibleWords(query) {
 	const q = String(query || '').trim().toUpperCase();
-	const available = poolCounts(inv());
-	const words = dictionaryWords || FALLBACK_WORDS;
+	const data = getBuildableWordData();
+	const words = data.words;
 	// Words are already frequency-ordered (most common first); keep that order.
-	const buildable = words.filter(
-		(word) =>
-			word.length > 1 && word.length <= PREVIEW_COLS && canBuildWord(word, available)
-	);
-	if (!q) return buildable.slice(0, 120);
+	if (!q) {
+		return words.slice(0, 120);
+	}
 	// Exact substring matches first, then looser fuzzy matches — each common-first.
 	const substr = [];
 	const fuzzy = [];
-	for (const word of buildable) {
+	const fuzzyWords = q.length === 1 ? data.index.byFirst[q] || [] : words;
+	for (let i = 0; i < words.length; i++) {
+		const word = words[i];
 		if (word.includes(q)) substr.push(word);
-		else if (fuzzyMatch(q, word)) fuzzy.push(word);
+		if (substr.length >= 120) break;
+	}
+	if (substr.length < 120) {
+		for (let i = 0; i < fuzzyWords.length; i++) {
+			const word = fuzzyWords[i];
+			if (!word.includes(q) && fuzzyMatch(q, word)) fuzzy.push(word);
+			if (substr.length + fuzzy.length >= 120) break;
+		}
 	}
 	return substr.concat(fuzzy).slice(0, 120);
 }
@@ -483,10 +526,12 @@ async function loadDictionaryWords() {
 						seen.add(word);
 						return true;
 					});
+				buildableWordCache.clear();
 				return dictionaryWords;
 			})
 			.catch(() => {
 				dictionaryWords = FALLBACK_WORDS;
+				buildableWordCache.clear();
 				return dictionaryWords;
 			});
 	}
@@ -594,8 +639,29 @@ function dictGroupLabel(text) {
 	label.textContent = text;
 	return label;
 }
+function exactDictionaryQuery(query) {
+	const word = String(query || '').trim().toUpperCase();
+	return /^[A-Z]{2,17}$/.test(word) ? word : '';
+}
+function setDictionarySearchStatus(possibleCount, relatedCount) {
+	const status = document.getElementById('dictionaryStatus');
+	if (!status) return;
+	if (possibleCount) {
+		status.textContent =
+			`${possibleCount} possible word${possibleCount === 1 ? '' : 's'} shown.` +
+			(relatedCount ? ` Plus ${relatedCount} related.` : '');
+	} else if (relatedCount) {
+		status.textContent = `${relatedCount} related word${relatedCount === 1 ? '' : 's'} shown.`;
+	} else {
+		status.textContent = 'No possible or related words found for this search.';
+	}
+}
 function renderDictionaryWords() {
+	clearTimeout(dictionarySearchTimer);
+	clearTimeout(dictionaryApiTimer);
+	clearTimeout(relatedTimer);
 	dictionaryView = 'possible';
+	dictionarySearchToken++;
 	const results = document.getElementById('dictionaryResults');
 	const status = document.getElementById('dictionaryStatus');
 	const search = document.getElementById('dictionarySearch');
@@ -618,8 +684,11 @@ function renderDictionaryWords() {
 	const total = yours.length + more.length;
 	status.textContent = total
 		? `${total} possible word${total === 1 ? '' : 's'} shown.`
-		: 'No possible words found for this search.';
-	scheduleRelatedWords(query, new Set([...yours, ...more]));
+		: 'Looking for related words...';
+	const shown = new Set([...yours, ...more]);
+	shown.possibleCount = total;
+	shown.relatedCount = 0;
+	scheduleDictionaryFallbacks(query, shown);
 }
 function visibleYourWords() {
 	const uses = state.wordUses || {};
@@ -635,6 +704,7 @@ function visibleYourWords() {
 		});
 }
 async function renderYourWordsView() {
+	cancelDictionarySearchWork();
 	dictionaryView = 'yours';
 	await loadCustomWords();
 	const results = document.getElementById('dictionaryResults');
@@ -655,6 +725,7 @@ async function renderYourWordsView() {
 		: 'No words used two separate times yet.';
 }
 async function renderHiddenWordsView() {
+	cancelDictionarySearchWork();
 	dictionaryView = 'hidden';
 	await loadCustomWords();
 	const results = document.getElementById('dictionaryResults');
@@ -703,6 +774,77 @@ function renderCurrentDictionaryView() {
 		renderDictionaryWords();
 	}
 }
+function cancelDictionarySearchWork() {
+	clearTimeout(dictionarySearchTimer);
+	clearTimeout(dictionaryApiTimer);
+	clearTimeout(relatedTimer);
+	dictionarySearchToken++;
+}
+function scheduleDictionaryFallbacks(query, shown, delay) {
+	clearTimeout(dictionarySearchTimer);
+	clearTimeout(dictionaryApiTimer);
+	clearTimeout(relatedTimer);
+	const token = ++dictionarySearchToken;
+	dictionarySearchTimer = setTimeout(() => {
+		if (token !== dictionarySearchToken) return;
+		scheduleExactDictionaryWord(query, shown);
+		scheduleRelatedWords(query, shown);
+	}, delay == null ? 300 : delay);
+}
+async function fetchExactDictionaryWord(query) {
+	const word = exactDictionaryQuery(query);
+	if (!word) return false;
+	if (dictionaryApiCache.has(word)) return dictionaryApiCache.get(word);
+	try {
+		const res = await fetch(`${DICTIONARY_API_URL}/${encodeURIComponent(word.toLowerCase())}`);
+		if (!res.ok) {
+			dictionaryApiCache.set(word, false);
+			return false;
+		}
+		const data = await res.json();
+		const found =
+			Array.isArray(data) &&
+			data.some(
+				(entry) =>
+					entry &&
+					Array.isArray(entry.meanings) &&
+					entry.meanings.some(
+						(meaning) =>
+							meaning &&
+							Array.isArray(meaning.definitions) &&
+							meaning.definitions.some((definition) => definition && definition.definition)
+					)
+			);
+		dictionaryApiCache.set(word, found);
+		return found;
+	} catch (e) {
+		return false;
+	}
+}
+function scheduleExactDictionaryWord(query, shown) {
+	clearTimeout(dictionaryApiTimer);
+	const word = exactDictionaryQuery(query);
+	if (!word || shown.has(word)) return;
+	const available = poolCounts(inv());
+	if (!canBuildWord(word, available)) return;
+	dictionaryApiTimer = setTimeout(() => renderExactDictionaryWord(query, shown), 360);
+}
+async function renderExactDictionaryWord(query, shown) {
+	const results = document.getElementById('dictionaryResults');
+	const search = document.getElementById('dictionarySearch');
+	if (!results || !search) return;
+	const word = exactDictionaryQuery(query);
+	if (!word || shown.has(word)) return;
+	const found = await fetchExactDictionaryWord(word);
+	if (!found || dictionaryView !== 'possible' || search.value !== query || shown.has(word)) return;
+	const frag = document.createDocumentFragment();
+	frag.appendChild(dictGroupLabel('Dictionary match'));
+	frag.appendChild(dictWordRow(word, null, false));
+	results.insertBefore(frag, results.firstChild);
+	shown.add(word);
+	shown.possibleCount = (shown.possibleCount || 0) + 1;
+	setDictionarySearchStatus(shown.possibleCount || 0, shown.relatedCount || 0);
+}
 async function fetchRelatedWords(query) {
 	const q = String(query || '').trim().toLowerCase();
 	if (!q) return [];
@@ -733,7 +875,7 @@ async function renderRelatedWords(query, shown) {
 	if (!results || !search) return;
 	const related = await fetchRelatedWords(query);
 	// Ignore stale responses if the search box changed while we waited.
-	if (search.value !== query) return;
+	if (dictionaryView !== 'possible' || search.value !== query) return;
 	const available = poolCounts(inv());
 	const buildable = related
 		.filter(
@@ -744,7 +886,11 @@ async function renderRelatedWords(query, shown) {
 				canBuildWord(word, available)
 		)
 		.slice(0, 60);
-	if (!buildable.length) return;
+	if (!buildable.length) {
+		shown.relatedCount = 0;
+		if (status && !shown.size) setDictionarySearchStatus(shown.possibleCount || 0, 0);
+		return;
+	}
 	const frag = document.createDocumentFragment();
 	const label = document.createElement('div');
 	label.className = 'dict-group';
@@ -752,7 +898,8 @@ async function renderRelatedWords(query, shown) {
 	frag.appendChild(label);
 	for (const word of buildable) frag.appendChild(dictWordRow(word));
 	results.appendChild(frag);
-	if (status) status.textContent += ` Plus ${buildable.length} related.`;
+	shown.relatedCount = buildable.length;
+	if (status) setDictionarySearchStatus(shown.possibleCount || 0, buildable.length);
 }
 async function openDictionaryModal() {
 	const modal = document.getElementById('dictionaryModal');
@@ -773,10 +920,14 @@ function bindDictionaryModal() {
 	const search = document.getElementById('dictionarySearch');
 	const modal = document.getElementById('dictionaryModal');
 	if (close) close.addEventListener('click', () => modal && modal.close());
-	if (main) main.addEventListener('click', renderDictionaryWords);
+	if (main) main.addEventListener('click', () => renderDictionaryWords());
 	if (yours) yours.addEventListener('click', renderYourWordsView);
 	if (hidden) hidden.addEventListener('click', renderHiddenWordsView);
-	if (search) search.addEventListener('input', renderDictionaryWords);
+	if (search)
+		search.addEventListener('input', () => {
+			if (dictionaryView !== 'possible') return;
+			renderDictionaryWords();
+		});
 	if (modal) {
 		modal.addEventListener('click', (e) => {
 			if (e.target === modal) modal.close();
@@ -1426,6 +1577,7 @@ function buildInv() {
 			let n = parseInt(i.value, 10);
 			if (isNaN(n) || n < 0) n = 0;
 			I[ch] = n;
+			invalidateDictionaryAvailability();
 			saveState();
 			calculate();
 		});
@@ -1827,6 +1979,7 @@ function importCSV(file) {
 				applied++;
 			}
 		}
+		invalidateDictionaryAvailability();
 		saveState();
 		buildInv();
 		calculate();
@@ -1969,6 +2122,7 @@ function loadStateFile(file) {
 			const parsed = JSON.parse(reader.result);
 			const nextState = normalizeLoadedState(parsed);
 			state = nextState;
+			invalidateDictionaryAvailability();
 			saveState();
 			buildEntry();
 			bindEntryActions();
@@ -2113,6 +2267,7 @@ async function init() {
 	document.getElementById('resetInvBtn').addEventListener('click', () => {
 		if (confirm('Reset inventory to the original counts?')) {
 			state.inv = Object.assign({}, DEFAULT_INV);
+			invalidateDictionaryAvailability();
 			saveState();
 			buildInv();
 			calculate();
@@ -2126,14 +2281,6 @@ async function init() {
 	window.addEventListener('afterprint', clearPrintScaling);
 	scheduleNextBonusRotation();
 	document.body.classList.remove('app-loading');
-
-	// Warm the dictionary quietly after load so it is ready the moment she opens it.
-	const prefetchDictionary = () => loadDictionaryWords().catch(() => {});
-	if (window.requestIdleCallback) {
-		requestIdleCallback(prefetchDictionary, { timeout: 4000 });
-	} else {
-		setTimeout(prefetchDictionary, 1200);
-	}
 }
 init().catch((e) => {
 	console.error(e);

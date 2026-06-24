@@ -190,14 +190,14 @@ async function loadDefaultInv() {
 
 const STORE_KEY = 'signswap.v2';
 
-let state = { inv: {}, text: {}, preview: {}, highScore: 0, wordUses: {} };
-let lastWordCaptureSig = '';
+let state = { inv: {}, text: {}, preview: {}, highScore: 0, wordUses: {}, hiddenWords: {} };
 let currentShortSet = new Set();
 const textCountCache = new Map();
 let dictionaryWords = null;
 let dictionaryPromise = null;
 const relatedCache = new Map(); // query -> related words (uppercase), from the thesaurus
 let relatedTimer = 0;
+let dictionaryView = 'possible';
 
 function loadState() {
 	try {
@@ -418,10 +418,6 @@ function recordUsedWords(texts) {
 	const seen = new Set();
 	for (const text of texts) for (const word of extractWords(text)) seen.add(word);
 	if (!seen.size) return;
-	// Skip an identical back-to-back capture (e.g. Save then Next Sign with no edits).
-	const sig = [...seen].sort().join(' ');
-	if (sig === lastWordCaptureSig) return;
-	lastWordCaptureSig = sig;
 	for (const word of seen) state.wordUses[word] = (state.wordUses[word] || 0) + 1;
 }
 function wordTileShortage(word, available) {
@@ -441,13 +437,15 @@ function wordTileShortage(word, available) {
 }
 function matchedUsedWords(query, available) {
 	const uses = state.wordUses || {};
+	const hidden = state.hiddenWords || {};
 	const q = String(query || '').trim().toUpperCase();
 	// Premade seeds from custom.json plus the learned list, deduped.
-	const candidates = new Set([...customWords, ...Object.keys(uses)]);
+	const candidates = new Set([...customWords, ...Object.keys(uses).filter((word) => (uses[word] || 0) >= 2)]);
 	const words = [...candidates].filter(
 		(word) =>
 			word.length > 1 &&
 			word.length <= PREVIEW_COLS &&
+			!hidden[word] &&
 			(!q || word.includes(q) || fuzzyMatch(q, word))
 	);
 	// "Your words" always show, even when the box is short — so don't filter by
@@ -494,7 +492,7 @@ async function loadDictionaryWords() {
 	}
 	return dictionaryPromise;
 }
-function dictWordRow(word, shortFlags) {
+function dictWordRow(word, shortFlags, removable, useCount) {
 	const row = document.createElement('div');
 	row.className = 'dict-word';
 	const tiles = document.createElement('div');
@@ -508,6 +506,12 @@ function dictWordRow(word, shortFlags) {
 	row.appendChild(tiles);
 	const actions = document.createElement('div');
 	actions.className = 'dict-rowactions';
+	if (useCount > 0) {
+		const count = document.createElement('span');
+		count.className = 'dict-count';
+		count.textContent = useCount + '×';
+		actions.appendChild(count);
+	}
 	const score = document.createElement('span');
 	score.className = 'dict-score';
 	score.textContent = wordScore(word) + ' pts';
@@ -518,10 +522,41 @@ function dictWordRow(word, shortFlags) {
 	copy.textContent = 'Copy';
 	copy.setAttribute('aria-label', 'Copy ' + word);
 	actions.appendChild(copy);
+	if (removable) {
+		const remove = document.createElement('button');
+		remove.type = 'button';
+		remove.className = 'dict-remove';
+		remove.textContent = '×';
+		remove.title = 'Remove from Your words';
+		remove.setAttribute('aria-label', 'Remove ' + word + ' from Your words');
+		remove.addEventListener('click', (e) => {
+			e.stopPropagation();
+			removeYourWord(word);
+		});
+		actions.appendChild(remove);
+	}
 	row.appendChild(actions);
 	row.title = 'Copy "' + word + '"';
 	row.addEventListener('click', () => copyWord(word, copy));
 	return row;
+}
+function removeYourWord(word) {
+	if (!state.wordUses || typeof state.wordUses !== 'object') state.wordUses = {};
+	if (!state.hiddenWords || typeof state.hiddenWords !== 'object') state.hiddenWords = {};
+	const count = state.wordUses[word] || 0;
+	if (count > 0) state.hiddenWords[word] = count;
+	else state.hiddenWords[word] = 1;
+	saveState();
+	renderCurrentDictionaryView();
+}
+function restoreYourWord(word) {
+	if (!state.hiddenWords || typeof state.hiddenWords !== 'object') state.hiddenWords = {};
+	if (!state.wordUses || typeof state.wordUses !== 'object') state.wordUses = {};
+	const count = parseInt(state.hiddenWords[word], 10) || 0;
+	if (count >= 2) state.wordUses[word] = Math.max(state.wordUses[word] || 0, count);
+	delete state.hiddenWords[word];
+	saveState();
+	renderCurrentDictionaryView();
 }
 function copyWord(word, btn) {
 	const flash = () => {
@@ -560,6 +595,7 @@ function dictGroupLabel(text) {
 	return label;
 }
 function renderDictionaryWords() {
+	dictionaryView = 'possible';
 	const results = document.getElementById('dictionaryResults');
 	const status = document.getElementById('dictionaryStatus');
 	const search = document.getElementById('dictionarySearch');
@@ -574,16 +610,98 @@ function renderDictionaryWords() {
 	if (yours.length) {
 		frag.appendChild(dictGroupLabel('Your words'));
 		for (const word of yours)
-			frag.appendChild(dictWordRow(word, wordTileShortage(word, available)));
+			frag.appendChild(dictWordRow(word, wordTileShortage(word, available), true, state.wordUses[word] || 0));
 		if (more.length) frag.appendChild(dictGroupLabel('More words'));
 	}
-	for (const word of more) frag.appendChild(dictWordRow(word));
+	for (const word of more) frag.appendChild(dictWordRow(word, null, false));
 	results.appendChild(frag);
 	const total = yours.length + more.length;
 	status.textContent = total
 		? `${total} possible word${total === 1 ? '' : 's'} shown.`
 		: 'No possible words found for this search.';
 	scheduleRelatedWords(query, new Set([...yours, ...more]));
+}
+function visibleYourWords() {
+	const uses = state.wordUses || {};
+	const hidden = state.hiddenWords || {};
+	const words = new Set([...customWords, ...Object.keys(uses).filter((word) => (uses[word] || 0) >= 2)]);
+	return [...words]
+		.filter((word) => /^[A-Z]{2,17}$/.test(word) && !hidden[word])
+		.sort((a, b) => {
+			const ua = uses[a] || 0;
+			const ub = uses[b] || 0;
+			if (ub !== ua) return ub - ua;
+			return a.localeCompare(b);
+		});
+}
+async function renderYourWordsView() {
+	dictionaryView = 'yours';
+	await loadCustomWords();
+	const results = document.getElementById('dictionaryResults');
+	const status = document.getElementById('dictionaryStatus');
+	const search = document.getElementById('dictionarySearch');
+	if (!results || !status) return;
+	if (search) search.value = '';
+	const available = poolCounts(inv());
+	const words = visibleYourWords();
+	results.innerHTML = '';
+	const frag = document.createDocumentFragment();
+	frag.appendChild(dictGroupLabel('Your words'));
+	for (const word of words)
+		frag.appendChild(dictWordRow(word, wordTileShortage(word, available), true, state.wordUses[word] || 0));
+	results.appendChild(frag);
+	status.textContent = words.length
+		? `${words.length} word${words.length === 1 ? '' : 's'} sorted by frequency.`
+		: 'No words used two separate times yet.';
+}
+async function renderHiddenWordsView() {
+	dictionaryView = 'hidden';
+	await loadCustomWords();
+	const results = document.getElementById('dictionaryResults');
+	const status = document.getElementById('dictionaryStatus');
+	const search = document.getElementById('dictionarySearch');
+	if (!results || !status) return;
+	if (search) search.value = '';
+	const hidden = state.hiddenWords || {};
+	const words = Object.keys(hidden)
+		.filter((word) => hidden[word] && /^[A-Z]{2,17}$/.test(word))
+		.sort((a, b) => a.localeCompare(b));
+	results.innerHTML = '';
+	const frag = document.createDocumentFragment();
+	frag.appendChild(dictGroupLabel('Hidden words'));
+	for (const word of words) frag.appendChild(hiddenWordRow(word));
+	results.appendChild(frag);
+	status.textContent = words.length
+		? `${words.length} hidden word${words.length === 1 ? '' : 's'}.`
+		: 'No hidden words.';
+}
+function hiddenWordRow(word) {
+	const row = document.createElement('div');
+	row.className = 'dict-word';
+	const name = document.createElement('strong');
+	name.className = 'dict-hidden-word';
+	name.textContent = word;
+	row.appendChild(name);
+	const actions = document.createElement('div');
+	actions.className = 'dict-rowactions';
+	const restore = document.createElement('button');
+	restore.type = 'button';
+	restore.className = 'ghost save-action dict-copy';
+	restore.textContent = 'Unhide';
+	restore.setAttribute('aria-label', 'Unhide ' + word);
+	restore.addEventListener('click', () => restoreYourWord(word));
+	actions.appendChild(restore);
+	row.appendChild(actions);
+	return row;
+}
+function renderCurrentDictionaryView() {
+	if (dictionaryView === 'yours') {
+		renderYourWordsView();
+	} else if (dictionaryView === 'hidden') {
+		renderHiddenWordsView();
+	} else {
+		renderDictionaryWords();
+	}
 }
 async function fetchRelatedWords(query) {
 	const q = String(query || '').trim().toLowerCase();
@@ -649,9 +767,15 @@ async function openDictionaryModal() {
 }
 function bindDictionaryModal() {
 	const close = document.getElementById('dictionaryCloseBtn');
+	const main = document.getElementById('dictionaryMainBtn');
+	const yours = document.getElementById('dictionaryYourWordsBtn');
+	const hidden = document.getElementById('dictionaryHiddenWordsBtn');
 	const search = document.getElementById('dictionarySearch');
 	const modal = document.getElementById('dictionaryModal');
 	if (close) close.addEventListener('click', () => modal && modal.close());
+	if (main) main.addEventListener('click', renderDictionaryWords);
+	if (yours) yours.addEventListener('click', renderYourWordsView);
+	if (hidden) hidden.addEventListener('click', renderHiddenWordsView);
 	if (search) search.addEventListener('input', renderDictionaryWords);
 	if (modal) {
 		modal.addEventListener('click', (e) => {
@@ -753,6 +877,11 @@ function clearHighScore() {
 	state.highScore = 0;
 	updateHighScoreBadge(false);
 	saveState();
+}
+function clearLocalStorage() {
+	if (!confirm('WARNING, THIS CLEARS ALL LOCAL STORAGE')) return;
+	localStorage.removeItem(STORE_KEY);
+	location.reload();
 }
 function commitCurrentHighScore() {
 	if (!state.preview || typeof state.preview !== 'object') return false;
@@ -1856,13 +1985,19 @@ function loadStateFile(file) {
 function normalizeLoadedState(data) {
 	const raw = data && data.state ? data.state : data;
 	if (!raw || typeof raw !== 'object') throw new Error('Invalid state');
-	const next = { inv: {}, text: {}, preview: {}, highScore: 0, wordUses: {} };
+	const next = { inv: {}, text: {}, preview: {}, highScore: 0, wordUses: {}, hiddenWords: {} };
 	next.highScore = Math.max(0, parseInt(raw.highScore, 10) || 0);
 	const rawUses = raw.wordUses && typeof raw.wordUses === 'object' ? raw.wordUses : {};
 	for (const key in rawUses) {
 		const word = String(key).toUpperCase();
 		const n = parseInt(rawUses[key], 10);
 		if (/^[A-Z]{2,17}$/.test(word) && n > 0) next.wordUses[word] = n;
+	}
+	const rawHidden = raw.hiddenWords && typeof raw.hiddenWords === 'object' ? raw.hiddenWords : {};
+	for (const key in rawHidden) {
+		const word = String(key).toUpperCase();
+		const n = parseInt(rawHidden[key], 10);
+		if (/^[A-Z]{2,17}$/.test(word) && rawHidden[key]) next.hiddenWords[word] = n > 0 ? n : 1;
 	}
 	const rawInv = raw.inv && typeof raw.inv === 'object' ? raw.inv : {};
 	for (const ch of CHARS) {
@@ -1985,6 +2120,7 @@ async function init() {
 	});
 	document.getElementById('randomizeBonusesBtn').addEventListener('click', randomizePreviewBonuses);
 	document.getElementById('clearHighScoreBtn').addEventListener('click', clearHighScore);
+	document.getElementById('clearStorageBtn').addEventListener('click', clearLocalStorage);
 	bindKeyboardShortcuts();
 	window.addEventListener('beforeprint', preparePrintScaling);
 	window.addEventListener('afterprint', clearPrintScaling);
